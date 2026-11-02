@@ -1,15 +1,24 @@
 <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
   <!-- Layout follows the terminal card glyph (packages/client/ui-sidebar-terminal):
-       a rounded tile inset from the canvas with a white round-capped prompt. The
+       a rounded tile inset from the canvas with a white round-capped mark. The
        fill follows the Subagent plugin artwork
        (packages/client/ui-primitives/src/plugin-artwork.tsx), whose blue square
        carries the same vertical light-to-dark gradient: #69B9FF at the top,
        #324DE2 at the bottom.
-       The rewind mark is the in-app back-arrow (src/client/styles.ts, 16-unit
-       grid) scaled 1.4x. Its ink box including the 0.75 stroke reaches
-       (1.75,1.75)-(14.25,12.75) on that grid, so the translate lands its centre
-       on the tile centre (18,18), and the ink spans 62.5% of the tile width —
-       the terminal glyph's own ratio.
+
+       The mark is the in-app rewind glyph from src/client/styles.ts (16-unit
+       grid, stroke 1.4): a 45-degree arrow whose tail curls back toward the
+       left, so the stroke ends pointing the same way the arrow does. That
+       closed loop is what reads as "undo" rather than "back", and it now
+       matches the per-message button exactly instead of drifting from it.
+
+       Sizing: the mark's ink box on the 16-unit grid is (2.8,3.4)-(12.8,13.6),
+       i.e. 10 units wide with its centre at (7.8,8.5). Scaling by 1.75 makes the
+       ink 17.5 units — 62.5% of the 28-unit tile, the terminal glyph's own
+       ratio — and the translate lands that centre on the tile centre (18,18).
+       The stroke is declared at 1.2 so that, after the 1.75 scale, it lands on
+       the same 2.1 effective units the previous artwork used.
+
        The canvas stays 36x36, the size the harness and the official artwork use,
        so the consumer's `size` attribute keeps the authority over display size;
        the inner group shrinks the finished drawing to 26/28 of the canvas around
@@ -17,9 +26,9 @@
        so the tile, its radius, the mark and the stroke ratio stay in proportion. -->
   <g transform="translate(18 18) scale(0.9286) translate(-18 -18)">
     <rect x="4" y="4" width="28" height="28" rx="8" fill="url(#rewind_blue)" />
-    <g transform="translate(6.8 7.85) scale(1.4)" stroke="#FFFFFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M6.5 2.5 2.5 6.5l4 4" />
-      <path d="M2.5 6.5h7a4 4 0 0 1 4 4v1.5" />
+    <g transform="translate(4.35 3.125) scale(1.75)" stroke="#FFFFFF" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6.2 3.4 2.8 6.8l3.4 3.4" />
+      <path d="M2.8 6.8h6.4a3.4 3.4 0 0 1 0 6.8H6.6" />
     </g>
   </g>
   <defs>

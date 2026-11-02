@@ -19,15 +19,7 @@ DeepSeek Harness 插件：**一键就地回退对话到任意更早的用户消�
 
 每条用户消息的操作行都有一个 **↶ 回退** 按钮。点击后弹出一次确认框：先列出将被还原 / 删除的文件清单，确认后**对话与文件同时回退**——没有模式选择，也不会只退一半。目标消息的文本自动回填输入框。也可以用 **`/rewind` 和 `/undo` 命令**选择目标，或用 `/rewind @<序号>` 直接指定。
 
-<table>
-  <tr>
-    <td align="center"><img src="assets/screenshots/rewind-button.png" width="440" alt="用户消息旁的 ↶ 回退按钮"><br><sub>用户消息旁的 ↶ 回退按钮</sub></td>
-    <td align="center"><img src="assets/screenshots/impact-list.png" width="440" alt="确认框里的文件清单"><br><sub>确认框里的文件清单</sub></td>
-  </tr>
-  <tr>
-    <td align="center" colspan="2"><img src="assets/screenshots/rewind-candidates.png" width="440" alt="/rewind 候选面板"><br><sub>/rewind 候选面板</sub></td>
-  </tr>
-</table>
+<img src="assets/screenshots/rewind-button.png" width="440" alt="用户消息旁的 ↶ 回退按钮">
 
 ### 回退历史与撤销
 

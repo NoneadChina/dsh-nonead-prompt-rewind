@@ -19,15 +19,7 @@ A deliberately focused plugin with one job: **rewind to any user message, no mat
 
 Every user message carries a **↶ rewind** button in its action row. Clicking it opens a single confirmation dialog listing the files that will be restored or deleted; one confirm rewinds **the conversation and the files together** — there is no mode choice and no half rewind. The target's text is filled back into the composer. You can also pick the target with the **`/rewind` and `/undo` commands**, or name it directly with `/rewind @<seq>`.
 
-<table>
-  <tr>
-    <td align="center"><img src="assets/screenshots/rewind-button.png" width="440" alt="Per-message ↶ rewind button"><br><sub>Per-message ↶ rewind button</sub></td>
-    <td align="center"><img src="assets/screenshots/impact-list.png" width="440" alt="File list in the confirmation dialog"><br><sub>File list in the confirmation dialog</sub></td>
-  </tr>
-  <tr>
-    <td align="center" colspan="2"><img src="assets/screenshots/rewind-candidates.png" width="440" alt="/rewind candidate picker"><br><sub>/rewind candidate picker</sub></td>
-  </tr>
-</table>
+<img src="assets/screenshots/rewind-button.png" width="440" alt="Per-message ↶ rewind button">
 
 ### Rewind history and undo
 
