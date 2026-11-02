@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.client.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "emitDeclarationOnly": false,
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx", "tests/support/**/*.ts", "tests/client-*.test.ts", "tests/chat-channel.test.ts", "tests/log.test.ts"]
+}

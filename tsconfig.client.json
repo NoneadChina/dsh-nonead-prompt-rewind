@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "declarationDir": "lib/types/client",
+    "rootDir": "src/client",
+    "jsx": "react-jsx"
+  },
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx"]
+}

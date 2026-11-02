@@ -1,0 +1,254 @@
+/**
+ * Compatibility invariants I1–I4 probes (test-driven investigation).
+ *
+ * Each probe runs the plugin's real append shapes through a REAL DSH
+ * consumer and asserts a compatibility invariant. A failing probe is a
+ * discovered incompatibility, not a mock artifact.
+ *
+ *   I1  the log stays replayable — token-meter `measure()` and
+ *       `Session.create` (the resume-preflight replay) both accept a log
+ *       that carries rewind markers and compaction checkpoints;
+ *   I2  the surface stays consistent — no duplicate nodes, every surface
+ *       node exists in the log, rewound targets never return, and derived
+ *       model messages do not throw;
+ *   I3  step/turn structure stays legal — client "turn-tail ordering" and
+ *       "one start Match per step" both hold, every `step/end` and every
+ *       `assistant/message` is paired with its `step/start`, and a rewind
+ *       marker never creates a phantom turn;
+ *   I4  every fold service consumes the marker log safely — session-stats
+ *       projection, session-title fold, and goal fold never throw, and
+ *       their outputs are predictable.
+ */
+import { describe, expect, it } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import { GoalId } from '@deepseek-ai/dsh-goal'
+import { foldGoal } from '@deepseek-ai/dsh-goal'
+import { foldSessionTitle } from '@deepseek-ai/dsh-session-title'
+import { Session, SessionId, type SessionSeq } from '@deepseek-ai/dsh-session'
+import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
+import { apply as applySessionStats } from '@deepseek-ai/dsh-session-stats'
+import { applyRewind, assistantMessage, assertTurnTailOrdering, buildTurnedSession, newMeter, textMessage } from './helpers.ts'
+import { planRewind } from '../src/rewind.ts'
+import { runScenario, SCENARIOS } from './scenarios.ts'
+
+/** I1: token-meter replay and resume-preflight (`Session.create`) accept the log. */
+function assertReplayable(session: Session): void {
+  expect(() => newMeter().measure(session)).not.toThrow()
+  expect(() => Session.create(session.id, session.snapshotEvents())).not.toThrow()
+}
+
+/** I1: compaction bookkeeping events always close (start…end pairs). */
+function assertCompactionBalanced(session: Session): void {
+  let starts = 0
+  let ends = 0
+  for (const event of session.snapshotEvents()) {
+    if (event.type === 'compaction/start') starts += 1
+    else if (event.type === 'compaction/end') ends += 1
+  }
+  expect(starts).toBe(ends)
+}
+
+/** I2: the surface is a legal projection of the log. */
+function assertSurfaceConsistent(session: Session, rewoundTargets: readonly number[]): void {
+  const nodes = session.surface.nodes
+  expect(new Set(nodes).size).toBe(nodes.length) // no duplicates
+  for (const seq of nodes) {
+    expect(session.snapshotEvents().some(event => event.seq === seq)).toBe(true) // every node exists
+  }
+  for (const target of rewoundTargets) {
+    expect(nodes).not.toContain(target) // a rewound target never returns to the surface
+  }
+  expect(() => session.deriveMessages()).not.toThrow() // model-history derivation stays legal
+}
+
+/** I3: step/turn structure invariants over the whole log. */
+function assertStepTurnStructure(session: Session): void {
+  assertTurnTailOrdering(session.snapshotEvents())
+  const stepStarts = new Set<string>()
+  for (const event of session.snapshotEvents()) {
+    if (event.type === 'step/start') {
+      stepStarts.add(`${event.data.turn}:${event.data.step}`)
+    }
+  }
+  for (const event of session.snapshotEvents()) {
+    if (event.type === 'step/end') {
+      expect(stepStarts.has(`${event.data.turn}:${event.data.step}`)).toBe(true)
+    }
+    if (event.type === 'assistant/message') {
+      expect(stepStarts.has(`${event.data.turn}:${event.data.step}`)).toBe(true)
+    }
+  }
+}
+
+describe('I1 log replayability (probe: token-meter + resume preflight)', () => {
+  for (const [name, ops] of Object.entries(SCENARIOS)) {
+    it(`scenario "${name}" keeps the log replayable end to end`, () => {
+      const { session, log } = runScenario(ops, name)
+      const rejected = log.filter(line => line.startsWith('rejected'))
+      expect(rejected).toEqual([]) // every scenario step is legal by construction
+      assertReplayable(session)
+      assertCompactionBalanced(session)
+    })
+  }
+
+  it('a log carrying a rewind marker alongside log-only plan/mode events stays replayable and frame-legal', () => {
+    // A rewind and the log-only, non-surface `plan/mode` state coexist in a
+    // real log (rewinding /plan text leaves plan mode active; a manual /plan
+    // off later appends a plan/mode{active:false}). That extra non-surface
+    // event must not break token-meter replay (I1) or the step/turn structure
+    // (I3).
+    const session = buildTurnedSession()
+    const cast = (s: Session) => s as unknown as { append(type: string, data: unknown): unknown }
+    cast(session).append('plan/mode', { active: true }) // the session is in plan mode
+    const target = session.surface.nodes.find(seq =>
+      session.snapshotEvents().find(e => e.seq === seq)?.type === 'user/message')!
+    applyRewind(session, target!)
+    cast(session).append('plan/mode', { active: false }) // a later /plan off
+    assertReplayable(session)
+    assertStepTurnStructure(session)
+  })
+
+  it('a log carrying workspace/changes announcements stays replayable and surface-stable', () => {
+    // `deliverables/workspace-changes` appends a log-only, NON-surface
+    // `workspace/changes` `{ turn }` per turn. It must not join the surface,
+    // move a rewind plan, or break either replay consumer.
+    const baseline = buildTurnedSession()
+    const session = buildTurnedSession()
+    const target = session.surface.nodes.find(seq =>
+      session.snapshotEvents().find(e => e.seq === seq)?.type === 'user/message')!
+    const surfaceBefore = [...baseline.surface.nodes]
+    const planBefore = planRewind(baseline.snapshotEvents(), baseline.surface.nodes, { kind: 'seq', seq: target })
+
+    const cast = (s: Session) => s as unknown as { append(type: string, data: unknown): unknown }
+    cast(session).append('workspace/changes', { turn: 1 })
+    cast(session).append('workspace/changes', { turn: 2 })
+
+    expect([...session.surface.nodes]).toEqual(surfaceBefore)
+    expect(planRewind(session.snapshotEvents(), session.surface.nodes, { kind: 'seq', seq: target }))
+      .toEqual(planBefore)
+
+    applyRewind(session, target)
+    assertReplayable(session)
+    assertStepTurnStructure(session)
+    // The resume preflight rebuilds the same surface, so a reloaded window hides
+    // exactly the rows a live one does.
+    expect([...Session.create(session.id, session.snapshotEvents()).surface.nodes])
+      .toEqual([...session.surface.nodes])
+  })
+})
+
+describe('I2 surface consistency (probe: deriveMessages + node legality)', () => {
+  for (const [name, ops] of Object.entries(SCENARIOS)) {
+    it(`scenario "${name}" keeps a consistent surface`, () => {
+      const { session, log } = runScenario(ops, name)
+      const rewoundTargets = log
+        .filter(line => line.startsWith('ok rewind'))
+        .map(line => Number(line.split('@')[1]))
+      assertSurfaceConsistent(session, rewoundTargets)
+    })
+  }
+
+  it('the marker is the surface tail right after a rewind', () => {
+    const session = buildTurnedSession()
+    const target = session.surface.nodes.find(seq =>
+      session.snapshotEvents().find(e => e.seq === seq)?.type === 'user/message')
+    applyRewind(session, target!)
+    const last = session.surface.nodes.at(-1)!
+    const lastEvent = session.snapshotEvents().find(e => e.seq === last)!
+    expect(lastEvent.type).toBe('user/message')
+    const data = lastEvent.data as { content?: unknown[]; source?: { kind?: string } }
+    expect(data.content).toEqual([{ type: 'text', text: '(empty message)' }])
+    expect(data.source?.kind).toBe('dsh-rewind')
+  })
+})
+
+describe('I3 step/turn structure (probe: client ordering + step pairing)', () => {
+  for (const [name, ops] of Object.entries(SCENARIOS)) {
+    it(`scenario "${name}" keeps step/turn structure legal`, () => {
+      const { session } = runScenario(ops, name)
+      assertStepTurnStructure(session)
+    })
+  }
+})
+
+describe('I4 fold-service safety (probe: stats / title / goal)', () => {
+  it('session-stats folds a rewound log without throwing and without a phantom turn', async () => {
+    const session = buildTurnedSession() // turns 1 and 2, both closed
+    const ctx = new Context()
+    new SessionProjectionRegistry(ctx)
+    await applySessionStats(ctx)
+    const registry = ctx.sessionProjections
+
+    // Fold the baseline log through a fresh registry cell (as a resume would).
+    const baseline = registry.snapshot(Session.create(session.id, session.snapshotEvents())).values.sessionStats!
+    expect(baseline.turns).toBe(2)
+    expect(baseline.steps).toBe(2)
+
+    const target = session.surface.nodes.find(seq =>
+      session.snapshotEvents().find(e => e.seq === seq)?.type === 'user/message')!
+    applyRewind(session, target)
+
+    // Rebuild the session from the rewound log and fold again: the marker is
+    // a `user/message` (not an `assistant/message`), so it adds NO ghost step
+    // frame — the step count stays at the real turns' steps, and the reused
+    // turn number creates no phantom turn. llmMs stays non-negative and near
+    // zero for the marker.
+    const after = registry.snapshot(Session.create(session.id, session.snapshotEvents())).values.sessionStats!
+    expect(after.turns).toBe(2)
+    expect(after.steps).toBe(2)
+    expect(after.llmMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('session-title fold is unaffected by a rewind marker', () => {
+    const session = buildTurnedSession()
+    session.append('session/title', {
+      title: 'stable title',
+      messageSeqs: [2 as SessionSeq],
+      source: { kind: 'fallback' },
+    })
+    const before = foldSessionTitle(session.snapshotEvents())
+    expect(before?.title).toBe('stable title')
+
+    const target = session.surface.nodes.find(seq =>
+      session.snapshotEvents().find(e => e.seq === seq)?.type === 'user/message')!
+    applyRewind(session, target)
+
+    const after = foldSessionTitle(session.snapshotEvents())
+    expect(after?.title).toBe('stable title')
+    expect(after?.eventSeq).toBe(before?.eventSeq)
+  })
+
+  it('goal fold survives a rewind marker without disturbing the admitted rounds', () => {
+    const session = Session.create(SessionId('goal-fold'))
+    session.append('goal/change', {
+      kind: 'goal/change',
+      version: 1,
+      operation: 'create',
+      goal: { id: GoalId('g-1'), revision: 1, objective: 'probe', phase: 'active', maxGoalRounds: 3 },
+      roundsStarted: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    const before = foldGoal(session.snapshotEvents())
+    expect(before.goal?.id).toBe(GoalId('g-1'))
+
+    // One real conversation turn, then a rewind that shadows part of it.
+    session.append('turn/start', { turn: 1 })
+    session.append('step/start', { turn: 1, step: 1 })
+    session.append('user/message', textMessage('question'), { surfaceOp: 'append' })
+    session.append('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: assistantMessage('answer'),
+      stream: [],
+    }, { surfaceOp: 'append' })
+    session.append('step/end', { turn: 1, step: 1 })
+    session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    applyRewind(session, session.surface.nodes[0]!)
+
+    expect(() => foldGoal(session.snapshotEvents())).not.toThrow()
+    const after = foldGoal(session.snapshotEvents())
+    expect(after.goal?.id).toBe(GoalId('g-1'))
+    expect(after.roundsStarted).toBe(before.roundsStarted)
+  })
+})

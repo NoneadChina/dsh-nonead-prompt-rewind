@@ -1,0 +1,379 @@
+/**
+ * Client plugin styling: one injected `<style>` tag (scoped class names),
+ * following the dsh design tokens (`--dsw-*`) so the button and popover blend
+ * with the conversation chrome.
+ *
+ * @module dsh-rewind/client/styles
+ */
+
+/** Class names shared between the injected DOM and the stylesheet. */
+export const CLASS = {
+  button: 'dsh-rewind-btn',
+  popover: 'dsh-rewind-popover',
+  popoverTitle: 'dsh-rewind-popover-title',
+  popoverTarget: 'dsh-rewind-popover-target',
+  popoverOption: 'dsh-rewind-popover-option',
+  popoverOptionLabel: 'dsh-rewind-popover-option-label',
+  popoverOptionHint: 'dsh-rewind-popover-option-hint',
+  popoverImpact: 'dsh-rewind-popover-impact',
+  popoverNote: 'dsh-rewind-popover-note',
+  popoverActions: 'dsh-rewind-popover-actions',
+  popoverPrimary: 'dsh-rewind-popover-primary',
+  popoverGhost: 'dsh-rewind-popover-ghost',
+  guardHint: 'dsh-rewind-guard-hint',
+} as const
+
+/**
+ * The ↶ glyph, drawn inline so the bundle stays dependency-free.
+ *
+ * Size follows the 0.1.7 product-icon set (15px, as the neighbouring copy/branch
+ * actions in `MessageIconActions`). Stroke is 1.25 rather than upstream's
+ * `Regular` 1: ↶ is a single open stroke next to a dense outline-plus-fill copy
+ * glyph, so at 1 it reads thinned out. Rounded caps/joins stay — upstream keeps
+ * them on curved artwork.
+ */
+export const REWIND_ICON_SVG = [
+  '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">',
+  '  <path d="M6.5 2.5 2.5 6.5l4 4" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>',
+  '  <path d="M2.5 6.5h7a4 4 0 0 1 4 4v1.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>',
+  '</svg>',
+].join('')
+
+/** One injected stylesheet (scoped under `.dsh-rewind-*`). */
+export const STYLE = `
+.dsh-rewind-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* The neighbouring action buttons scale by this delta too. */
+  width: calc(28px + var(--dsh-content-font-delta, 0px));
+  height: calc(28px + var(--dsh-content-font-delta, 0px));
+  padding: 6px;
+  border: none;
+  border-radius: var(--dsw-radius-sm, 8px);
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+.dsh-rewind-btn svg {
+  width: calc(15px + var(--dsh-content-font-delta, 0px));
+  height: calc(15px + var(--dsh-content-font-delta, 0px));
+}
+@media (hover: hover) {
+  .dsh-rewind-btn:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+    color: var(--dsw-alias-label-secondary);
+  }
+}
+
+.dsh-rewind-popover {
+  position: fixed;
+  z-index: 1100;
+  box-sizing: border-box;
+  width: min(300px, calc(100vw - 24px));
+  padding: 16px;
+  border: 0;
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-specific-menu, var(--dsw-alias-bg-layer-3));
+  backdrop-filter: var(--dsw-menu-backdrop-filter);
+  isolation: isolate;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+  /* Elevated surface: match the menu cards' l2 scrollbar tokens. */
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+  box-shadow: var(--dsw-elevation-prominent);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-rewind-popover-title {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+.dsh-rewind-popover-target {
+  margin: 2px 0 10px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  word-break: break-all;
+  /* The full message sits above the popover; two lines are enough context. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.dsh-rewind-popover-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  margin: 0 0 2px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dsh-rewind-popover-option:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+/* Arrow navigation moves real focus, so the focused row carries the pointer's
+   fill and the browser ring is suppressed: in dark mode the UA two-tone ring
+   draws its dark half against the filled row and reads as a residue edge (the
+   harness Menu suppresses it the same way). */
+.dsh-rewind-popover-option:focus-visible:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  outline: none;
+}
+.dsh-rewind-popover-option:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.dsh-rewind-popover-option-label {
+  font-weight: 500;
+}
+.dsh-rewind-popover-option-hint {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-rewind-popover-impact {
+  margin: 4px 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-secondary);
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow: auto;
+}
+.dsh-rewind-popover-note {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-rewind-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.dsh-rewind-popover-primary,
+.dsh-rewind-popover-ghost {
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+}
+.dsh-rewind-popover-primary {
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+.dsh-rewind-popover-primary:hover:not(:disabled) {
+  background: var(--dsw-alias-button-primary-hover);
+}
+.dsh-rewind-popover-primary:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.dsh-rewind-popover-ghost {
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-rewind-popover-ghost:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.dsh-rewind-popover-ghost:active {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+.dsh-rewind-guard-hint {
+  position: fixed;
+  z-index: 1000;
+  max-width: min(440px, calc(100vw - 24px));
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-specific-menu, var(--dsw-alias-bg-layer-3));
+  backdrop-filter: var(--dsw-menu-backdrop-filter);
+  isolation: isolate;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+  box-shadow: var(--dsw-elevation-panel);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-primary);
+  pointer-events: none;
+}
+
+/* ---- Plugin configuration form ---- */
+/* Only the card's own controls: the two switch rows, their hints, and the divider. */
+.dsh-rewind-settings-divider {
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+.dsh-rewind-settings-section {
+  display: grid;
+  gap: 6px;
+  padding: 12px 0;
+}
+.dsh-rewind-settings-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-rewind-settings-toggle-label {
+  flex: 1;
+  min-width: 0;
+}
+.dsh-rewind-settings-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* ---- Rewind history page (settings.section) ----
+   Every colour here is a dsw token, so dark/light follow the host theme; the
+   fallbacks are neutral greys on purpose (a hard-coded hue would clash in one
+   of the two themes). */
+.dsh-rewind-history {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh-rewind-history-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dsh-rewind-history-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.dsh-rewind-history-sub {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-rewind-history-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.dsh-rewind-history-btn {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 12px;
+  border-radius: var(--dsw-radius-sm, 8px);
+  border: 1px solid var(--dsw-alias-border-light, rgba(127, 127, 127, 0.28));
+  background: var(--dsw-alias-bg-layer-3, transparent);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+.dsh-rewind-history-btn:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, 0.14));
+}
+.dsh-rewind-history-btn:focus-visible {
+  outline: 2px solid var(--dsw-alias-button-primary-fill, currentColor);
+  outline-offset: 1px;
+}
+.dsh-rewind-history-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.dsh-rewind-history-btn--warn {
+  border-color: var(--dsw-alias-label-secondary);
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-rewind-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dsh-rewind-history-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-light, rgba(127, 127, 127, 0.2));
+}
+.dsh-rewind-history-row.is-undone {
+  opacity: 0.55;
+}
+.dsh-rewind-history-badge {
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-light, rgba(127, 127, 127, 0.28));
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+}
+.dsh-rewind-history-main {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-rewind-history-age {
+  color: var(--dsw-alias-label-tertiary);
+  margin-right: 6px;
+}
+.dsh-rewind-history-target {
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh-rewind-history-meta {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh-rewind-history-hint {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+/* The archive viewer spans the whole row: it is a block of markdown, not a cell. */
+.dsh-rewind-history-archive {
+  grid-column: 1 / -1;
+  margin: 6px 0 0;
+  padding: 8px;
+  max-height: 320px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-bg-secondary, rgba(127, 127, 127, 0.08));
+  border-radius: 6px;
+}
+.dsh-rewind-history-config {
+  border-top: 1px solid var(--dsw-alias-border-light, rgba(127, 127, 127, 0.2));
+  padding-top: 12px;
+}
+/* Narrow settings panes: keep the row readable instead of squeezing four
+   columns into a phone-width dialog. */
+@media (max-width: 480px) {
+  .dsh-rewind-history-row {
+    grid-template-columns: auto 1fr;
+  }
+  .dsh-rewind-history-row > span:nth-child(3),
+  .dsh-rewind-history-row > span:nth-child(4) {
+    grid-column: 2;
+  }
+  .dsh-rewind-history-row > span:nth-child(4) {
+    justify-self: start;
+  }
+}
+`

@@ -1,0 +1,429 @@
+/**
+ * Unit tests for the snapshot-cleanup policy module (src/snapshot-cleanup.ts):
+ * config validation, the settings-backed store, the command parser, and the 24h
+ * throttle. The last-sweep state file is exercised against a real file under a
+ * temporary directory.
+ */
+import { mkdtemp, mkdir, readFile, writeFile, rm, utimes } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createVolatile, updateVolatile } from '@deepseek-ai/cosmokit'
+import { DEFAULT_MAX_FILE_BYTES, MAX_ANCHOR_GROUPS, SnapshotStore } from '../src/snapshot.ts'
+import { DEFAULT_FILE_CHECKPOINTING_ENABLED, Config } from '../src/index.ts'
+import {
+  AUTO_SWEEP_INTERVAL_MS,
+  DEFAULT_CLEANUP_CONFIG,
+  DEFAULT_MAX_AGE_DAYS,
+  loadLastSweepAt,
+  parseCleanupCommand,
+  parseCleanupConfig,
+  resolveCleanupStatePath,
+  runAutoCleanupCheck,
+  saveLastSweepAt,
+  shouldRunAutoSweep,
+  volatileCleanupStore,
+  type CleanupConfig,
+  type CleanupConfigWriter,
+} from '../src/snapshot-cleanup.ts'
+
+let cfg: string
+let state: string
+let dir: string
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), 'dsh-rewind-cfg-'))
+  cfg = join(dir, 'snapshot-cleanup.json')
+  state = join(dir, 'snapshot-cleanup-last-sweep.json')
+})
+
+afterEach(async () => {
+  vi.unstubAllEnvs()
+  await rm(dir, { recursive: true, force: true })
+})
+
+describe('parseCleanupConfig', () => {
+  it('rejects a non-object root', () => {
+    expect(parseCleanupConfig(null).ok).toBe(false)
+    expect(parseCleanupConfig('x').ok).toBe(false)
+    expect(parseCleanupConfig([1]).ok).toBe(false)
+  })
+
+  it('defaults a missing file object to the off policy', () => {
+    const r = parseCleanupConfig({})
+    expect(r).toEqual({ ok: true, config: { enabled: false, maxAgeDays: DEFAULT_MAX_AGE_DAYS } })
+  })
+
+  it('keeps provided fields and tolerates unknown keys', () => {
+    const r = parseCleanupConfig({ enabled: true, maxAgeDays: 5, extra: 'ignored' })
+    expect(r).toEqual({ ok: true, config: { enabled: true, maxAgeDays: 5 } })
+  })
+
+  it('rejects a non-boolean enabled', () => {
+    expect(parseCleanupConfig({ enabled: 'yes' }).ok).toBe(false)
+  })
+
+  it('rejects a non-positive or non-integer maxAgeDays', () => {
+    expect(parseCleanupConfig({ maxAgeDays: 0 }).ok).toBe(false)
+    expect(parseCleanupConfig({ maxAgeDays: -1 }).ok).toBe(false)
+    expect(parseCleanupConfig({ maxAgeDays: 1.5 }).ok).toBe(false)
+    expect(parseCleanupConfig({ maxAgeDays: '30' }).ok).toBe(false)
+    expect(parseCleanupConfig({ maxAgeDays: Number.NaN }).ok).toBe(false)
+  })
+})
+
+describe('parseCleanupCommand', () => {
+  it('treats empty input as status', () => {
+    expect(parseCleanupCommand('')).toEqual({ action: 'status' })
+    expect(parseCleanupCommand('   ')).toEqual({ action: 'status' })
+  })
+
+  it('parses the simple sub-commands', () => {
+    expect(parseCleanupCommand('status')).toEqual({ action: 'status' })
+    expect(parseCleanupCommand('on')).toEqual({ action: 'on' })
+    expect(parseCleanupCommand('off')).toEqual({ action: 'off' })
+  })
+
+  it('parses run (age rules) as dry by default and executes with --apply', () => {
+    expect(parseCleanupCommand('run')).toEqual({ action: 'run', target: 'rules', apply: false })
+    expect(parseCleanupCommand('run --apply')).toEqual({ action: 'run', target: 'rules', apply: true })
+  })
+
+  it('parses run --current (the current session clear), dry or --apply', () => {
+    expect(parseCleanupCommand('run --current')).toEqual({ action: 'run', target: 'current', apply: false })
+    expect(parseCleanupCommand('run --current --apply')).toEqual({ action: 'run', target: 'current', apply: true })
+    // --apply is a position-independent flag.
+    expect(parseCleanupCommand('run --apply --current')).toEqual({ action: 'run', target: 'current', apply: true })
+    expect(parseCleanupCommand('run --current --current')).toEqual({ action: 'run', target: 'current', apply: false })
+  })
+
+  it('rejects the removed run-apply abbreviation', () => {
+    expect(parseCleanupCommand('run-apply')).toMatchObject({ error: expect.any(String) })
+  })
+
+  it('parses max-age with a validated positive integer', () => {
+    expect(parseCleanupCommand('max-age 12')).toEqual({ action: 'max-age', value: 12 })
+  })
+
+  it('rejects a bad max-age', () => {
+    expect(parseCleanupCommand('max-age')).toMatchObject({ error: expect.any(String) })
+    expect(parseCleanupCommand('max-age 0')).toMatchObject({ error: expect.any(String) })
+    expect(parseCleanupCommand('max-age abc')).toMatchObject({ error: expect.any(String) })
+    expect(parseCleanupCommand('max-age -3')).toMatchObject({ error: expect.any(String) })
+  })
+
+  it('rejects unknown sub-commands and malformed forms', () => {
+    expect(parseCleanupCommand('bogus')).toMatchObject({ error: expect.any(String) })
+    expect(parseCleanupCommand('on extra')).toMatchObject({ error: expect.any(String) })
+    expect(parseCleanupCommand('run --x')).toMatchObject({ error: expect.any(String) })
+    expect(parseCleanupCommand('run --current --bogus')).toMatchObject({ error: expect.any(String) })
+  })
+})
+
+describe('shouldRunAutoSweep', () => {
+  const now = 1_700_000_000_000
+  const day = 86_400_000
+
+  it('always sweeps when never run (lastAt 0)', () => {
+    expect(shouldRunAutoSweep(0, now)).toBe(true)
+  })
+
+  it('is a no-op within 24h and fires at / past 24h', () => {
+    expect(shouldRunAutoSweep(now - (day - 1), now)).toBe(false)
+    expect(shouldRunAutoSweep(now - day, now)).toBe(true)
+    expect(shouldRunAutoSweep(now - 2 * day, now)).toBe(true)
+  })
+})
+
+describe('last-sweep state (persisted across restart)', () => {
+  it('round-trips a saved timestamp', async () => {
+    const t = 1_700_000_111_222
+    await saveLastSweepAt(state, t)
+    await expect(loadLastSweepAt(state)).resolves.toBe(t)
+  })
+
+  it('reads a missing file as 0 (never swept)', async () => {
+    await expect(loadLastSweepAt(state)).resolves.toBe(0)
+  })
+
+  it('reads a corrupt / non-number file as 0 (fail-safe)', async () => {
+    await writeFile(state, '{broken', 'utf8')
+    await expect(loadLastSweepAt(state)).resolves.toBe(0)
+    await writeFile(state, JSON.stringify({ lastSweepAt: 'nope' }), 'utf8')
+    await expect(loadLastSweepAt(state)).resolves.toBe(0)
+  })
+
+  it('saves atomically and creates the parent dir', async () => {
+    const nested = join(dir, 'deep', 'state.json')
+    await saveLastSweepAt(nested, 5)
+    await expect(loadLastSweepAt(nested)).resolves.toBe(5)
+    await expect(readFile(`${nested}.tmp`, 'utf8')).rejects.toThrow()
+  })
+
+  it('anchors the 24h window from the persisted value (survives a restart)', async () => {
+    const t0 = 1_700_000_000_000
+    // A fresh "process" reads the persisted old time and is due.
+    await saveLastSweepAt(state, t0 - 10 * 86_400_000)
+    await expect(shouldRunAutoSweep(await loadLastSweepAt(state), t0)).toBe(true)
+    // A fresh "process" reads a recent time and is throttled.
+    await saveLastSweepAt(state, t0 - 86_400_000 + 1)
+    await expect(shouldRunAutoSweep(await loadLastSweepAt(state), t0)).toBe(false)
+  })
+})
+
+describe('resolveCleanupStatePath', () => {
+  const prevHome = process.env.DSH_HOME
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+  })
+
+  it('resolves the last-sweep state path under the default harness home', () => {
+    // The path follows $DSH_HOME, so clear it to pin the ~/.dsh default.
+    delete process.env.DSH_HOME
+    expect(resolveCleanupStatePath()).toBe(join(homedir(), '.dsh', 'snapshot-cleanup-last-sweep.json'))
+  })
+})
+
+describe('runAutoCleanupCheck', () => {
+  const day = 86_400_000
+  const now = () => Date.now()
+  const snapRoot = () => join(dir, 'snapshots')
+  const deps = (policy: { ok: true; config: CleanupConfig } | { ok: false; error: string }) => ({
+    pruner: new SnapshotStore(snapRoot()),
+    readConfig: async () => policy,
+    statePath: state,
+    log: (_s: string): void => {},
+  })
+  const enabled = (): { ok: true; config: CleanupConfig } => ({ ok: true, config: { enabled: true, maxAgeDays: 30 } })
+
+  async function seedStale(sessionId: string, mtimeMs: number): Promise<void> {
+    const anchor = join(snapRoot(), sessionId, '1')
+    await mkdir(anchor, { recursive: true })
+    const file = join(anchor, 'x.json')
+    await writeFile(file, '{}', 'utf8')
+    const t = new Date(mtimeMs)
+    await utimes(file, t, t)
+    await utimes(anchor, t, t)
+    await utimes(join(snapRoot(), sessionId), t, t)
+  }
+
+  const staleExists = async (sessionId: string): Promise<boolean> =>
+    new SnapshotStore(snapRoot()).exists(join(snapRoot(), sessionId))
+
+  it('sweeps and re-anchors the window when enabled and due', async () => {
+    await seedStale('old', now() - 40 * day)
+    await saveLastSweepAt(state, now() - 40 * day)
+    await runAutoCleanupCheck(deps(enabled()), 'active')
+    await expect(staleExists('old')).resolves.toBe(false)
+    await expect(loadLastSweepAt(state)).resolves.toBeGreaterThan(now() - day)
+  })
+
+  it('uses the configured cadence for the throttle', async () => {
+    await seedStale('old', now() - 40 * day)
+    // Swept two hours ago: the daily default throttles, an hourly cadence is due.
+    await saveLastSweepAt(state, now() - 2 * 60 * 60_000)
+    await runAutoCleanupCheck({ ...deps(enabled()), intervalMs: 60 * 60_000 }, 'active')
+    await expect(staleExists('old')).resolves.toBe(false)
+  })
+
+  it('does nothing when throttled (recent window)', async () => {
+    await seedStale('old', now() - 40 * day)
+    const recent = now() - 60_000
+    await saveLastSweepAt(state, recent)
+    await runAutoCleanupCheck(deps(enabled()), 'active')
+    await expect(staleExists('old')).resolves.toBe(true) // untouched
+    await expect(loadLastSweepAt(state)).resolves.toBe(recent) // unchanged
+  })
+
+  it('never sweeps when disabled (and never reads the window)', async () => {
+    await seedStale('old', now() - 40 * day)
+    await runAutoCleanupCheck(deps({ ok: true, config: { enabled: false, maxAgeDays: 30 } }), 'active')
+    await expect(staleExists('old')).resolves.toBe(true)
+  })
+
+  it('fail-closes on a corrupt config and logs', async () => {
+    await seedStale('old', now() - 40 * day)
+    const log = vi.fn()
+    await runAutoCleanupCheck({ ...deps({ ok: false, error: 'config file is not valid JSON' }), log }, 'active')
+    expect(log).toHaveBeenCalled()
+    await expect(staleExists('old')).resolves.toBe(true) // nothing deleted
+  })
+
+  it('treats a missing config as the safe default (disabled)', async () => {
+    await seedStale('old', now() - 40 * day)
+    await runAutoCleanupCheck(deps({ ok: true, config: { ...DEFAULT_CLEANUP_CONFIG } }), 'active')
+    await expect(staleExists('old')).resolves.toBe(true)
+  })
+
+  it('never prunes the active session even when due', async () => {
+    await seedStale('active', now() - 40 * day)
+    await saveLastSweepAt(state, now() - 40 * day)
+    await runAutoCleanupCheck(deps(enabled()), 'active')
+    await expect(staleExists('active')).resolves.toBe(true) // skipped via keepActiveId
+  })
+
+  it('does not sweep when the mount is already aborted', async () => {
+    await seedStale('old', now() - 40 * day)
+    await saveLastSweepAt(state, now() - 40 * day)
+    const abort = new AbortController()
+    abort.abort()
+    await runAutoCleanupCheck({ ...deps(enabled()), signal: abort.signal }, 'active')
+    await expect(staleExists('old')).resolves.toBe(true)
+    // The window is untouched too, so a fresh mount still sees the sweep as due.
+    await expect(loadLastSweepAt(state)).resolves.toBeLessThanOrEqual(now() - 40 * day + 1000)
+  })
+
+  it('stops before the prune when the mount aborts while the policy loads', async () => {
+    await seedStale('old', now() - 40 * day)
+    await saveLastSweepAt(state, now() - 40 * day)
+    const abort = new AbortController()
+    const base = deps(enabled())
+    await runAutoCleanupCheck({
+      ...base,
+      signal: abort.signal,
+      readConfig: async () => { abort.abort(); return base.readConfig() },
+    }, 'active')
+    await expect(staleExists('old')).resolves.toBe(true)
+  })
+
+  it('prunes but does not re-anchor the window when the mount aborts mid-sweep', async () => {
+    await seedStale('old', now() - 40 * day)
+    await saveLastSweepAt(state, now() - 40 * day)
+    const abort = new AbortController()
+    const base = deps(enabled())
+    await runAutoCleanupCheck({
+      ...base,
+      signal: abort.signal,
+      // A live unload landing on the prune itself.
+      pruner: {
+        pruneStale: async (opts) => {
+          abort.abort()
+          return base.pruner.pruneStale(opts)
+        },
+      },
+    }, 'active')
+    await expect(staleExists('old')).resolves.toBe(false) // the sweep itself ran
+    // Not re-anchored: the next mount must not be throttled by a sweep this one
+    // never finished owning.
+    await expect(loadLastSweepAt(state)).resolves.toBeLessThanOrEqual(now() - 40 * day + 1000)
+  })
+})
+
+describe('Config schema + volatileCleanupStore', () => {
+  /** One fake entry writer recording what each save wrote. */
+  function fakeWriter(): CleanupConfigWriter & {
+    readonly updates: readonly { readonly entryId: string; readonly patch: Record<string, unknown> }[]
+    readonly clears: readonly { readonly entryId: string; readonly fields: readonly string[] }[]
+  } {
+    const updates: { entryId: string; patch: Record<string, unknown> }[] = []
+    const clears: { entryId: string; fields: readonly string[] }[] = []
+    return {
+      entryId: 'dsh-nonead-prompt-rewind',
+      updates,
+      clears,
+      update: async (entryId, patch) => { updates.push({ entryId, patch }) },
+      clear: async (entryId, fields) => { clears.push({ entryId, fields }) },
+    }
+  }
+
+  it('the Config schema declares both cleanup fields as live with the shared defaults', () => {
+    const resolved = Config({} as never) as {
+      autoCleanupEnabled: { get(): unknown }
+      autoCleanupMaxAgeDays: { get(): unknown }
+    }
+    expect(resolved.autoCleanupEnabled.get()).toBe(DEFAULT_CLEANUP_CONFIG.enabled)
+    expect(resolved.autoCleanupMaxAgeDays.get()).toBe(DEFAULT_CLEANUP_CONFIG.maxAgeDays)
+    expect(DEFAULT_MAX_AGE_DAYS).toBe(DEFAULT_CLEANUP_CONFIG.maxAgeDays)
+  })
+
+  it('the Config schema declares the file-checkpointing switch live and on by default', () => {
+    const resolved = Config({} as never) as { fileCheckpointingEnabled: { get(): unknown } }
+    expect(resolved.fileCheckpointingEnabled.get()).toBe(DEFAULT_FILE_CHECKPOINTING_ENABLED)
+    expect(DEFAULT_FILE_CHECKPOINTING_ENABLED).toBe(true)
+    expect(() => Config({ fileCheckpointingEnabled: 'yes' } as never)).toThrow()
+  })
+
+  it('the Config schema rejects a non-positive or non-integer autoCleanupMaxAgeDays', () => {
+    for (const value of [0, -1, 2.5, Number.NaN]) {
+      expect(() => Config({ autoCleanupMaxAgeDays: value } as never)).toThrow()
+    }
+  })
+
+  it('the Config schema rejects a non-boolean autoCleanupEnabled', () => {
+    expect(() => Config({ autoCleanupEnabled: 'yes' } as never)).toThrow()
+  })
+
+  it('the Config schema defaults and validates the store bounds', () => {
+    const resolved = Config({} as never) as { maxFileBytes: number; maxAnchorGroups: number }
+    expect(resolved.maxFileBytes).toBe(DEFAULT_MAX_FILE_BYTES)
+    expect(resolved.maxAnchorGroups).toBe(MAX_ANCHOR_GROUPS)
+    // `0` is the documented "no cap" value; the group bound must stay >= 1 so a
+    // configuration typo can never evict every snapshot.
+    expect((Config({ maxFileBytes: 0, maxAnchorGroups: 1 } as never) as { maxFileBytes: number }).maxFileBytes).toBe(0)
+    for (const value of [-1, 1.5, Number.NaN]) {
+      expect(() => Config({ maxFileBytes: value } as never)).toThrow()
+    }
+    for (const value of [0, -1, 2.5, Number.NaN]) {
+      expect(() => Config({ maxAnchorGroups: value } as never)).toThrow()
+    }
+  })
+
+  it('the Config schema defaults and validates the sweep cadence', () => {
+    expect((Config({} as never) as { autoSweepIntervalMs: number }).autoSweepIntervalMs).toBe(AUTO_SWEEP_INTERVAL_MS)
+    for (const value of [0, -1, 1.5, Number.NaN]) {
+      expect(() => Config({ autoSweepIntervalMs: value } as never)).toThrow()
+    }
+  })
+
+  it('load() reads the live references, defaulting an absent value', () => {
+    const autoCleanupEnabled = createVolatile(true)
+    const autoCleanupMaxAgeDays = createVolatile(9)
+    const store = volatileCleanupStore({ autoCleanupEnabled, autoCleanupMaxAgeDays }, fakeWriter())
+    expect(store.load()).toEqual({ enabled: true, maxAgeDays: 9 })
+    // A settings write updates the reference in place; the next read sees it.
+    updateVolatile(autoCleanupEnabled, createVolatile(false))
+    expect(store.load()).toEqual({ enabled: false, maxAgeDays: 9 })
+  })
+
+  it('save() writes under the document field names and clears a defaulted field', async () => {
+    const writer = fakeWriter()
+    const store = volatileCleanupStore(
+      { autoCleanupEnabled: createVolatile(false), autoCleanupMaxAgeDays: createVolatile(DEFAULT_MAX_AGE_DAYS) },
+      writer,
+    )
+    await store.save({ enabled: true, maxAgeDays: 12 })
+    expect(writer.updates).toEqual([{
+      entryId: 'dsh-nonead-prompt-rewind',
+      patch: { autoCleanupEnabled: true, autoCleanupMaxAgeDays: 12 },
+    }])
+    expect(writer.clears).toEqual([])
+  })
+
+  it('save() clears a field set to its default instead of pinning it', async () => {
+    const writer = fakeWriter()
+    const store = volatileCleanupStore(
+      { autoCleanupEnabled: createVolatile(true), autoCleanupMaxAgeDays: createVolatile(5) },
+      writer,
+    )
+    await store.save({ ...DEFAULT_CLEANUP_CONFIG })
+    expect(writer.clears).toEqual([{
+      entryId: 'dsh-nonead-prompt-rewind',
+      fields: ['autoCleanupEnabled', 'autoCleanupMaxAgeDays'],
+    }])
+    expect(writer.updates).toEqual([])
+  })
+
+  it('save() refuses an invalid policy before it reaches the entry', async () => {
+    const writer = fakeWriter()
+    const store = volatileCleanupStore(
+      { autoCleanupEnabled: createVolatile(false), autoCleanupMaxAgeDays: createVolatile(30) },
+      writer,
+    )
+    await expect(store.save({ enabled: false, maxAgeDays: 0 })).rejects.toThrow()
+    expect(writer.updates).toEqual([])
+    expect(writer.clears).toEqual([])
+  })
+})

@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/index.ts", "src/rewind.ts", "src/snapshot.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "tests/client-*.test.ts", "tests/support/**/*.ts"]
+}
