@@ -38,8 +38,5 @@ Thumbs.db
 # DSH tooling state (session memory, not project source)
 .dsh-project-memory/
 
-# IDE cache (Trae)
-.codeartsdoer/
-
-# Scratch exports (rewind recovery dumps, not project source)
+# Ad-hoc exports of a folded conversation (one-off recovery, not project source)
 rewind-recovered-*.md
