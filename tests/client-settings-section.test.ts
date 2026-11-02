@@ -86,7 +86,8 @@ describe('SettingsSection (history page)', () => {
       loadHistory: async () => ({ workspace: { key: 'ws-w1', path: 'D:/proj' }, entries: [] }),
     })
     expect(container.textContent).toContain('settings.nav')
-    expect(container.textContent).toContain('settings.workspace:D:/proj')
+    // The workspace is a pill beside the title, not a "workspace: <path>" line.
+    expect(container.textContent).toContain('D:/proj')
     expect(container.textContent).toContain('settings.history.empty')
   })
 

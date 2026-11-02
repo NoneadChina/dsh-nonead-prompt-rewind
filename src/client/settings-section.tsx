@@ -41,6 +41,9 @@ export type SectionLabelKey =
   | 'settings.history.archive'
   | 'settings.history.archiveHide'
   | 'settings.history.archiveFailed'
+  | 'settings.history.count'
+  | 'settings.history.files'
+  | 'settings.history.archiveTitle'
   | 'settings.history.unavailable'
   | 'settings.caps.degraded'
   | 'history.outcome.ok'
@@ -160,50 +163,102 @@ function HistoryRow(props: {
   const conversationOnly = entry.outcome === 'success' && !entry.undoable && !undone
   return (
     <li className={undone ? 'dsh-rewind-history-row is-undone' : 'dsh-rewind-history-row'}>
-      <span className="dsh-rewind-history-badge">{t(OUTCOME_KEYS[entry.outcome])}</span>
-      <span className="dsh-rewind-history-main">
+      <div className="dsh-rewind-history-rowhead">
         <span className="dsh-rewind-history-age" title={new Date(entry.at).toISOString()}>
           {relativeTime(entry.at, now, formatter)}
         </span>
         <span className="dsh-rewind-history-target">{targetLabel(entry.targetSeq)}</span>
-        {entry.messagePreview === '' ? null : <span>{` ${entry.messagePreview}`}</span>}
-        {fileCount === 0 ? null : <span className="dsh-rewind-history-meta">{` ${fileCount}`}</span>}
-      </span>
-      <span className="dsh-rewind-history-meta">
+        <span className="dsh-rewind-history-badge">{t(OUTCOME_KEYS[entry.outcome])}</span>
+        {fileCount === 0 ? null : (
+          <span className="dsh-rewind-history-meta">{t('settings.history.files', { count: fileCount })}</span>
+        )}
         {undone
-          ? t('settings.history.undone', { time: relativeTime(entry.undoneAt ?? entry.at, now, formatter) })
-          : conversationOnly
-            ? t('settings.history.conversationOnly')
-            : ''}
-      </span>
-      <span>
-        {canUndo
           ? (
-              <button
-                type="button"
-                className={confirming ? 'dsh-rewind-history-btn dsh-rewind-history-btn--warn' : 'dsh-rewind-history-btn'}
-                onClick={() => onUndo(entry.opId)}
-              >
-                {confirming ? t('settings.history.undoConfirm') : t('settings.history.undo')}
-              </button>
+              <span className="dsh-rewind-history-meta">
+                {t('settings.history.undone', { time: relativeTime(entry.undoneAt ?? entry.at, now, formatter) })}
+              </span>
             )
-          : null}
-        {entry.archivePath === undefined
-          ? null
-          : (
-              <button
-                type="button"
-                className="dsh-rewind-history-btn"
-                onClick={() => onArchive(entry.opId)}
-              >
-                {archiveText === undefined ? t('settings.history.archive') : t('settings.history.archiveHide')}
-              </button>
-            )}
-      </span>
+          : conversationOnly
+            ? <span className="dsh-rewind-history-meta">{t('settings.history.conversationOnly')}</span>
+            : null}
+      </div>
+      {entry.messagePreview === ''
+        ? null
+        : <div className="dsh-rewind-history-preview" title={entry.messagePreview}>{entry.messagePreview}</div>}
+      {canUndo || entry.archivePath !== undefined
+        ? (
+            <div className="dsh-rewind-history-rowactions">
+              {canUndo
+                ? (
+                    <button
+                      type="button"
+                      className={confirming ? 'dsh-rewind-history-btn dsh-rewind-history-btn--warn' : 'dsh-rewind-history-btn'}
+                      onClick={() => onUndo(entry.opId)}
+                    >
+                      {confirming ? t('settings.history.undoConfirm') : t('settings.history.undo')}
+                    </button>
+                  )
+                : null}
+              {entry.archivePath === undefined
+                ? null
+                : (
+                    <button
+                      type="button"
+                      className="dsh-rewind-history-btn dsh-rewind-history-btn--quiet"
+                      onClick={() => onArchive(entry.opId)}
+                    >
+                      {archiveText === undefined ? t('settings.history.archive') : t('settings.history.archiveHide')}
+                    </button>
+                  )}
+            </div>
+          )
+        : null}
       {archiveText === undefined
         ? null
-        : <pre className="dsh-rewind-history-archive">{archiveText}</pre>}
+        : (
+            <div className="dsh-rewind-history-viewer">
+              <div className="dsh-rewind-history-viewer-head">
+                <span className="dsh-rewind-history-viewer-title">{t('settings.history.archiveTitle')}</span>
+                <button
+                  type="button"
+                  className="dsh-rewind-history-btn dsh-rewind-history-btn--quiet"
+                  onClick={() => onArchive(entry.opId)}
+                >
+                  {t('settings.history.archiveHide')}
+                </button>
+              </div>
+              <pre className="dsh-rewind-history-pre">{archiveText}</pre>
+            </div>
+          )}
     </li>
+  )
+}
+
+/**
+ * The plugin's own artwork, inlined so the settings heading carries the same
+ * brand mark the plugin market shows. It mirrors `assets/icon.svg` exactly: a
+ * 36-unit canvas, a 28-unit tile, the two-stop blue gradient, and the closed
+ * rewind glyph from `styles.ts`. The gradient id is page-scoped so two mounts
+ * cannot steal each other's fill.
+ * @returns the icon element.
+ */
+function SettingsIcon(): React.ReactNode {
+  return (
+    <svg className="dsh-rewind-history-logo" width="22" height="22" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+      <g transform="translate(18 18) scale(0.9286) translate(-18 -18)">
+        <rect x="4" y="4" width="28" height="28" rx="8" fill="url(#dsh-rewind-settings-logo)" />
+        <g transform="translate(4.35 3.125) scale(1.75)" stroke="#FFFFFF" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M6.2 3.4 2.8 6.8l3.4 3.4" />
+          <path d="M2.8 6.8h6.4a3.4 3.4 0 0 1 0 6.8H6.6" />
+        </g>
+      </g>
+      <defs>
+        <linearGradient id="dsh-rewind-settings-logo" x1="18" y1="4" x2="18" y2="32" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#69B9FF" />
+          <stop offset="1" stopColor="#324DE2" />
+        </linearGradient>
+      </defs>
+    </svg>
   )
 }
 
@@ -326,69 +381,84 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
   return (
     <div className="dsh-rewind-history">
       <div className="dsh-rewind-history-head">
-        <div className="dsh-rewind-history-title">{t('settings.nav')}</div>
-        <div className="dsh-rewind-history-sub">
-          {state.kind === 'ready'
-            ? t('settings.workspace', { key: state.view.workspace.path ?? state.view.workspace.key })
-            : ''}
+        <div className="dsh-rewind-history-headrow">
+          <h2 className="dsh-rewind-history-title">
+            <SettingsIcon />
+            {t('settings.nav')}
+          </h2>
+          <div className="dsh-rewind-history-actions">
+            <button type="button" className="dsh-rewind-history-btn" onClick={reload}>
+              {t('settings.history.refresh')}
+            </button>
+            <button
+              type="button"
+              className="dsh-rewind-history-btn"
+              onClick={onExport}
+              disabled={state.kind !== 'ready'}
+            >
+              {t('settings.history.export')}
+            </button>
+            <button
+              type="button"
+              className={confirmingClear ? 'dsh-rewind-history-btn dsh-rewind-history-btn--warn' : 'dsh-rewind-history-btn'}
+              onClick={onClear}
+              disabled={entries.length === 0}
+            >
+              {confirmingClear ? t('settings.history.clearConfirm') : t('settings.history.clear')}
+            </button>
+          </div>
         </div>
+        {/* The workspace lives on the subtitle line: inside the title it fought
+            the heading for width and wrapped "回退历史" onto two lines. */}
+        <p className="dsh-rewind-history-sub">
+          {state.kind === 'ready'
+            ? (
+                <>
+                  <span className="dsh-rewind-history-badge">
+                    {state.view.workspace.path ?? state.view.workspace.key}
+                  </span>
+                  <span>{t('settings.history.count', { count: entries.length })}</span>
+                </>
+              )
+            : '\u00a0'}
+        </p>
       </div>
 
-      <div className="dsh-rewind-history-bar">
-        <button type="button" className="dsh-rewind-history-btn" onClick={reload}>
-          {t('settings.history.refresh')}
-        </button>
-        <button
-          type="button"
-          className="dsh-rewind-history-btn"
-          onClick={onExport}
-          disabled={state.kind !== 'ready'}
-        >
-          {t('settings.history.export')}
-        </button>
-        <button
-          type="button"
-          className={confirmingClear ? 'dsh-rewind-history-btn dsh-rewind-history-btn--warn' : 'dsh-rewind-history-btn'}
-          onClick={onClear}
-          disabled={entries.length === 0}
-        >
-          {confirmingClear ? t('settings.history.clearConfirm') : t('settings.history.clear')}
-        </button>
-      </div>
+      <section className="dsh-rewind-history-card">
+        {notice === undefined ? null : <div className="dsh-rewind-history-hint">{notice}</div>}
 
-      {notice === undefined ? null : <div className="dsh-rewind-history-hint">{notice}</div>}
+        {/* A degraded host keeps working; the page states what it lost instead of
+            pretending the feature is intact. */}
+        {caps !== undefined && (!caps.history || !caps.undo || !caps.fileCheckpointing)
+          ? <div className="dsh-rewind-history-hint">{t('settings.caps.degraded')}</div>
+          : null}
 
-      {/* A degraded host keeps working; the page states what it lost instead of
-          pretending the feature is intact. */}
-      {caps !== undefined && (!caps.history || !caps.undo || !caps.fileCheckpointing)
-        ? <div className="dsh-rewind-history-hint">{t('settings.caps.degraded')}</div>
-        : null}
-
-      {state.kind === 'loading' ? <div className="dsh-rewind-history-hint">…</div> : null}
-      {state.kind === 'no-session' || state.kind === 'unavailable'
-        ? <div className="dsh-rewind-history-hint">{t('settings.history.unavailable')}</div>
-        : null}
-      {state.kind === 'ready' && entries.length === 0
-        ? <div className="dsh-rewind-history-hint">{t('settings.history.empty')}</div>
-        : null}
-      {entries.length === 0 ? null : (
-        <ul className="dsh-rewind-history-list">
-          {entries.map(entry => (
-            <HistoryRow
-              key={entry.opId}
-              entry={entry}
-              t={t}
-              now={now}
-              formatter={formatter}
-              canUndo={entry.undoable && entry.undoneAt === undefined && entry.opId === tailOpId}
-              confirming={confirmingUndo === entry.opId}
-              onUndo={onUndo}
-              archiveText={archive?.opId === entry.opId ? archive.text : undefined}
-              onArchive={onArchive}
-            />
-          ))}
-        </ul>
-      )}
+        {state.kind === 'loading' ? <div className="dsh-rewind-history-hint">…</div> : null}
+        {state.kind === 'no-session' || state.kind === 'unavailable'
+          ? <div className="dsh-rewind-history-hint">{t('settings.history.unavailable')}</div>
+          : null}
+        {state.kind === 'ready' && entries.length === 0
+          ? <div className="dsh-rewind-history-empty">{t('settings.history.empty')}</div>
+          : null}
+        {entries.length === 0 ? null : (
+          <ul className="dsh-rewind-history-list">
+            {entries.map(entry => (
+              <HistoryRow
+                key={entry.opId}
+                entry={entry}
+                t={t}
+                now={now}
+                formatter={formatter}
+                canUndo={entry.undoable && entry.undoneAt === undefined && entry.opId === tailOpId}
+                confirming={confirmingUndo === entry.opId}
+                onUndo={onUndo}
+                archiveText={archive?.opId === entry.opId ? archive.text : undefined}
+                onArchive={onArchive}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
 
       {/* The configuration knobs, rendered by the SAME card the Plugins page
           uses (one form model, one draft). Omitted when the host gave no form. */}
