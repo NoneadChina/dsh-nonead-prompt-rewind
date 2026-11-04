@@ -6,6 +6,26 @@ and the release steps are documented in
 
 <!-- Release notes for v0.15.0 and earlier live in the GitHub Releases. -->
 
+## [0.5.2] - 2026-11-04
+
+> 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
+
+### 兼容性
+
+- **DSH 验证基线前进到 `0.2.2-alpha.3`**（当前内测线）：36 个 `@deepseek-ai/dsh-*` devDependency 全部钉到该版本；声明范围不变，`0.2.2-alpha.2` 与 `0.2.1-0` 线仍准入，缺失能力继续由 `caps` 运行时探测降级。
+- 双基线实测：`0.2.2-alpha.3` 与 `0.2.2-alpha.2` 上 `npm run check` 均通过（后者在隔离副本中验证）。
+
+---
+
+> DSH `>=0.2.1-0 <0.3.1-0` supported
+
+### Compatibility
+
+- **The DSH verification baseline moves to `0.2.2-alpha.3`** (the current internal line): all 36 `@deepseek-ai/dsh-*` devDependencies are pinned to it. The declared range is unchanged, so `0.2.2-alpha.2` and the `0.2.1-0` line stay admitted and missing capabilities keep degrading through the runtime `caps` probe.
+- Verified on both baselines: `npm run check` passes on `0.2.2-alpha.3` and on `0.2.2-alpha.2` (the latter in an isolated copy).
+
+**Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.5.1...v0.5.2
+
 ## [0.5.1] - 2026-11-02
 
 > 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
