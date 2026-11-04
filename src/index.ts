@@ -765,6 +765,74 @@ interface RewindRpcHost {
   readonly rpc: { handle(channel: string, handler: RewindRpcHandler): () => Promise<void> }
 }
 
+/**
+ * `Symbol.for('cordis.isolate')`: every cordis context carries this symbol-keyed
+ * table mapping service names to their isolation keys.
+ */
+const CORDIS_ISOLATE = Symbol.for('cordis.isolate')
+
+/**
+ * Read a service's RAW implementation out of a cordis context.
+ *
+ * A context proxy hands back a traced wrapper (so method calls see the caller's
+ * active context), and its prototype is the service CLASS, not the instance —
+ * deriving from it would drop every field the constructor assigned. The
+ * implementation itself is reachable through the reflection store, keyed by the
+ * service's isolation symbol.
+ *
+ * @param base - the context to read from.
+ * @param name - the service name.
+ * @returns the raw implementation, or undefined when it cannot be located.
+ */
+export function rawServiceOf(base: object, name: string): unknown {
+  const isolate = (base as unknown as Record<symbol, Record<string, symbol> | undefined>)[CORDIS_ISOLATE]
+  const key = isolate?.[name]
+  if (key === undefined) return undefined
+  try {
+    // `reflect` is a core context accessor rather than a registered service, so it
+    // is read as a property (the reflected store is public).
+    const reflect = (base as {
+      readonly reflect?: { readonly store?: Readonly<Record<symbol, { readonly value?: unknown }>> }
+    }).reflect
+    return reflect?.store?.[key]?.value
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Re-derive a RAW service instance so that the lookups it performs INSIDE
+ * `rpc.handle` resolve from the application root instead of the provider's own
+ * context.
+ *
+ * Why this exists: `rpc.handle(channel, handler)` stores the channel through
+ * `owner.effect(() => owner.webServer.register(route), ...)`, where `owner` is
+ * the Connection service's own *define-site* context. `webServer` and
+ * `connection` are provided by two DIFFERENT plugin fibres, so that read walks
+ * the provider's fibre chain, dead-ends at the root fibre (`runtime === null`)
+ * and throws `cannot get property "webServer" without inject` — the channel is
+ * then never registered and every client query degrades to "host RPC is
+ * unavailable" (Settings → Rewind history shows exactly that).
+ *
+ * A thin inheriting object with `ctx` redefined to the root keeps every method
+ * and constructor field unchanged; only the define-site of the service's own
+ * lookups moves, and the root context resolves `webServer` through its
+ * unchecked path.
+ *
+ * @param raw - the raw service implementation (see {@link rawServiceOf}).
+ * @param root - the application root context.
+ * @returns the re-based service, or undefined when the shape is not as expected
+ *   (the caller then falls back to the plain service and reports the failure).
+ */
+export function rebaseOnRoot<T extends object>(raw: T, root: object): T | undefined {
+  if (typeof (raw as { readonly rpc?: { readonly handle?: unknown } }).rpc?.handle !== 'function') return undefined
+  const bridge = Object.create(raw) as T
+  // The service's own accessor reads `this.ctx`; redefine it here so the read
+  // lands on the root context rather than on the provider's fibre.
+  Object.defineProperty(bridge, 'ctx', { value: root, configurable: true, writable: true })
+  return bridge
+}
+
 /** The slice of `ctx.agents` the RPC handler resolves a session through. */
 interface AgentLookup {
   get(sessionId: SessionId): { readonly session: Session } | undefined
@@ -1992,15 +2060,19 @@ export function apply(ctx: Context, config?: Config): void {
     })()
   }, { global: true })
 
-  // `rpc.handle` registers its route inside an effect that re-reads
-  // `owner.webServer`; that read loses the inject set on a plugin-scoped
-  // owner, so register from the root context and dispose the route with this
-  // plugin instead. See docs/compat/audit.md#u10.
+  // `rpc.handle` registers its route inside an effect that reads `owner.webServer`,
+  // where `owner` is the CONNECTION service's own define-site context. `webServer`
+  // and `connection` live in different plugin fibres, so that read dead-ends at the
+  // root fibre and throws `cannot get property "webServer" without inject` — the
+  // channel then never exists and every client query reports "host RPC unavailable".
+  // `rebaseOnRoot` moves only that define-site to the root context; see its doc.
   ctx.inject(['connection'], (scope) => {
     try {
-      const connection = (scope.root as unknown as { readonly connection?: RewindRpcHost }).connection
-      if (connection === undefined) return
-      const dispose = connection.rpc.handle(
+      const proxied = scope.get('connection') as RewindRpcHost | undefined
+      if (proxied === undefined) return
+      const raw = rawServiceOf(scope, 'connection') as RewindRpcHost | undefined
+      const host = raw === undefined ? undefined : rebaseOnRoot(raw, scope.root)
+      const dispose = (host ?? proxied).rpc.handle(
         REWIND_RPC_CHANNEL,
         createRewindRpcHandler(
           store,

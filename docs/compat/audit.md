@@ -77,7 +77,7 @@ alternate API for the same seam.
 | --- | --- |
 | Host session log | `session.snapshotEvents()` for planning; `session.append('user/message', …, { surfaceOp, sourceEventSeqs })` for the cut |
 | Host working directory | `ctx.workingDirectory.ensure(agent)` — the base the fs tools resolve against |
-| Host RPC channel | `ctx.connection.rpc.handle('/dsh-rewind', handler)`, registered from the root context |
+| Host RPC channel | `ctx.connection.rpc.handle('/dsh-rewind', handler)`, called on a root-rebased Connection service (see U10) |
 | Client chat snapshot | the `uiConversation` `chat` view (`chatSnapshotOf`) |
 | Client composer refill | the `conversation.input` facade's `setDraft` + `focus` |
 | Client image restore | `SessionFace.readAttachment` (a complete durable reference), then `conversation.createDrafts(…, uploadImages)` + `input.for(scope).addAttachments(…)` |
@@ -193,11 +193,19 @@ a version branch; the core pair (`surfaceOp`, `rpc`) is non-negotiable and refus
 
 ### U10 — generic RPC route registration fails from a plugin scope
 
-`connection.rpc.handle` registers its route inside an effect that re-reads `owner.webServer`;
-a plugin-scoped owner loses the `webServer` inject inside that effect. **Ask:** capture
-`webServer` outside the effect so RPC registration works from a normal plugin scope.
-**Stance:** register from the root context and dispose the route with the plugin
-(`src/index.ts`); remove the shim when upstream fixes it.
+`connection.rpc.handle` registers its route inside an effect that reads `owner.webServer`, where
+`owner` is the Connection service's own define-site context. `webServer` and `connection` are
+provided by two DIFFERENT plugin fibres, so that read walks the provider's fibre chain, dead-ends
+at the root fibre (`runtime === null`) and throws `cannot get property "webServer" without inject`.
+The channel is then never registered and every client query degrades to "host RPC is unavailable"
+(Settings → Rewind history says exactly that, and the host log carries
+`[dsh-rewind] RPC channel registration failed`). **Ask:** resolve `webServer` from the use site,
+or take the server as a parameter, so an ordinary plugin scope can register. **Stance:** re-base
+the service's define site onto the root context for the call — `rawServiceOf` reads the
+implementation out of the reflection store (a context proxy's prototype is the service CLASS, so
+deriving from the wrapper would drop constructor state), `rebaseOnRoot` re-points its `ctx` at
+the root, and `tests/host-rpc-register.test.ts` pins both the failure and the registration; remove
+the shim when upstream fixes it.
 
 ## Coverage gaps
 
@@ -210,8 +218,10 @@ a plugin-scoped owner loses the `webServer` inject inside that effect. **Ask:** 
 - **Providers outside the verification dependencies.** Attachment storage is not a
   devDependency, so image refill is exercised with a fake face; real JSONL persistence needs a
   platform flock addon that the test tree does not carry.
-- **Real Connection route registration.** `verify-host` calls the RPC handler directly, so the
-  real `webServer` registration path is verified on a live host manually, not in the suite.
+- **Real Connection route registration.** `verify-host` calls the RPC handler directly. The
+  fibre topology that broke it is now pinned with stand-ins on the real cordis
+  (`tests/host-rpc-register.test.ts`), but the live `webServer` mount is still confirmed on a
+  running host manually.
 
 ## Deliberate semantics (no entry kept)
 
