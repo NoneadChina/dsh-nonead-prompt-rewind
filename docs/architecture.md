@@ -217,7 +217,8 @@ the plugin still rewinds by command — only the graphical surfaces degrade.
 - **Admission boundary.** `engines.node` is `>=24.9.0` and `engines.dsh` is `>=0.2.1-0 <0.3.1-0`;
   every `@deepseek-ai/dsh-*` peer uses the same range and is optional. A runtime outside the range
   is refused at load rather than admitted into unadapted code. `devDependencies` pin
-  `0.2.2-alpha.2`, the verified line.
+  `0.2.2-alpha.3`, the verified line; the range below it stays admitted because optional
+  surfaces are read through the runtime `caps` probe rather than a version branch.
 - **Runtime capability probe.** `caps` reports `history`, `undo` and `fileCheckpointing`; the
   settings page states a missing capability instead of hiding the loss.
 - **Optional seams degrade, they do not break the feature.** Each command registration is

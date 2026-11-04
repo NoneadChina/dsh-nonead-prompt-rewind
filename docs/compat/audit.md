@@ -15,8 +15,14 @@
 >
 > **Declared range:** `engines.dsh: ">=0.2.1-0 <0.3.1-0"`, mirrored on all sixteen
 > `@deepseek-ai/dsh-*` peer dependencies. **Verified baseline** (the targeted version):
-> `0.2.2-alpha.2`, the version every `@deepseek-ai/*` devDependency is pinned to. Release and
+> `0.2.2-alpha.3`, the version every `@deepseek-ai/*` devDependency is pinned to. Release and
 > DSH alignment policy: [`docs/release/release.md`](../release/release.md).
+>
+> **Compatibility stance: adapt forward, never drop the range.** Moving the baseline forward
+> does not narrow the declared range — `0.2.2-alpha.2` and the `0.2.1-0` line stay admitted.
+> Forward adaptation and old-line support are one mechanism, not two: the new rules this plugin
+> needs are read from the runtime (`caps`, the settings/config-form surfaces) and absent ones
+> degrade, so the same code serves both the baseline and the lines below it.
 
 ## Verification method
 
@@ -46,9 +52,12 @@ is why the two are kept identical. A runtime outside the declared range is refus
 rather than admitted into unadapted code. The declaration is not the verification record,
 which matters here because the declared range spans two lines:
 
-- **`0.2.2-alpha.2` — verified baseline.** Every `@deepseek-ai/*` devDependency is pinned to
+- **`0.2.2-alpha.3` — verified baseline.** Every `@deepseek-ai/*` devDependency is pinned to
   this version, and `npm run check` runs against it. Every invariant below is asserted at this
   baseline.
+- **`0.2.2-alpha.2` — previously verified, still admitted.** The same invariant set passed at
+  `alpha.2` before the baseline moved; no invariant changed between the two patches, so the
+  declared range keeps `alpha.2` admitted while the baseline follows the current patch.
 - **`0.2.1-0` line — admitted, not verified version-by-version.** It predates the current
   client settings surface, so what exists there is decided at **runtime capability detection**,
   not by a version branch: the client asks the host over the `/dsh-rewind` `caps` endpoint and

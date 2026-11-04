@@ -62,7 +62,8 @@
 | 许可 | MIT | [LICENSE](../LICENSE) |
 | Node | `>=24.9.0` | `engines.node` |
 | DSH | `>=0.2.1-0 <0.3.1-0` | `engines.dsh`（自 DSH 0.2.1-alpha.4 起是唯一准入判据） |
-| 验证基线 | devDependencies 全部钉 `0.2.2-alpha.2` | [package.json](../package.json)；记录在 [compat/audit](compat/audit.md) 的 Targeted version |
+| 验证基线 | devDependencies 全部钉 `0.2.2-alpha.3` | [package.json](../package.json)；记录在 [compat/audit](compat/audit.md) 的 Targeted version |
+| 兼容口径 | 基线前进不收缩声明范围：`0.2.2-alpha.2` 与 `0.2.1-0` 线仍准入，靠 `caps` 运行时探测降级 | [compat/audit](compat/audit.md) `Version scope` |
 | 仓库自动化 | **没有** `.github/workflows/` | 仓库根目录实况；见 PLAN 待办 |
 | 界面语言 | 8：`en` `zh` `ja` `es` `fr` `de` `ru` `pt` | `HOST_DICTS` / `CLIENT_DICTS` |
 | 测试规模 | `tests/` 下 42 个 `*.test.ts` | 目录实况 |
