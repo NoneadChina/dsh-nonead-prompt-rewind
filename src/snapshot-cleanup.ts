@@ -5,8 +5,9 @@
  * unit-testable in isolation; `src/index.ts` is the only consumer.
  *
  * Semantics (the "cleanup" vocabulary deliberately avoids "retention"):
- * - `enabled` toggles the AUTOMATIC (24h) sweep. `false` (the default) keeps
- *   every snapshot — the pre-feature behavior — and never persists a policy.
+ * - `enabled` toggles the AUTOMATIC (24h) sweep. It defaults to `true` (an
+ *   install that never touches the knob does sweep), and setting it `false`
+ *   keeps every snapshot until the user turns it back on.
  * - `maxAgeDays` is the only "keep" knob: a finished session dir whose newest
  *   member stamp is older than this many days of idle is removed by a sweep.
  *   `0`/negative/non-integer are rejected, so a broken value can never steer
@@ -14,8 +15,8 @@
  * - The policy is this plugin entry's live configuration (`autoCleanupEnabled` /
  *   `autoCleanupMaxAgeDays` — named for what they gate, because the entry's own
  *   `disabled:` flag sits beside them in the same document); an absent value is
- *   the safe default (off), and an invalid one fail-closes a sweep (deletes
- *   nothing) instead of guessing.
+ *   the product default (on, 3 days), and an invalid one fail-closes a sweep
+ *   (deletes nothing) instead of guessing.
  *
  * @module dsh-rewind/snapshot-cleanup
  */
@@ -31,11 +32,11 @@ export interface CleanupConfig {
   readonly maxAgeDays: number
 }
 
-/** The default keep threshold: finished sessions idle > 30 days are pruned. */
-export const DEFAULT_MAX_AGE_DAYS = 30
+/** The default keep threshold: finished sessions idle > 3 days are pruned. */
+export const DEFAULT_MAX_AGE_DAYS = 3
 
-/** The safe default policy (off) — a missing/corrupt value behaves like this. */
-export const DEFAULT_CLEANUP_CONFIG: CleanupConfig = { enabled: false, maxAgeDays: DEFAULT_MAX_AGE_DAYS }
+/** The product default policy (on, 3 days) — a missing/corrupt value behaves like this. */
+export const DEFAULT_CLEANUP_CONFIG: CleanupConfig = { enabled: true, maxAgeDays: DEFAULT_MAX_AGE_DAYS }
 
 /**
  * The live configuration slice the cleanup policy reads: the two schema fields

@@ -50,9 +50,9 @@ describe('parseCleanupConfig', () => {
     expect(parseCleanupConfig([1]).ok).toBe(false)
   })
 
-  it('defaults a missing file object to the off policy', () => {
+  it('defaults a missing file object to the on policy', () => {
     const r = parseCleanupConfig({})
-    expect(r).toEqual({ ok: true, config: { enabled: false, maxAgeDays: DEFAULT_MAX_AGE_DAYS } })
+    expect(r).toEqual({ ok: true, config: { enabled: true, maxAgeDays: DEFAULT_MAX_AGE_DAYS } })
   })
 
   it('keeps provided fields and tolerates unknown keys', () => {
@@ -252,10 +252,18 @@ describe('runAutoCleanupCheck', () => {
     await expect(staleExists('old')).resolves.toBe(true) // nothing deleted
   })
 
-  it('treats a missing config as the safe default (disabled)', async () => {
+  it('treats a missing config as the product default (enabled, 3 days)', async () => {
     await seedStale('old', now() - 40 * day)
     await runAutoCleanupCheck(deps({ ok: true, config: { ...DEFAULT_CLEANUP_CONFIG } }), 'active')
-    await expect(staleExists('old')).resolves.toBe(true)
+    await expect(staleExists('old')).resolves.toBe(false)
+  })
+
+  it('prunes past 3 idle days but keeps anything fresher under that default', async () => {
+    await seedStale('four-days', now() - 4 * day)
+    await seedStale('two-days', now() - 2 * day)
+    await runAutoCleanupCheck(deps({ ok: true, config: { ...DEFAULT_CLEANUP_CONFIG } }), 'active')
+    await expect(staleExists('four-days')).resolves.toBe(false)
+    await expect(staleExists('two-days')).resolves.toBe(true)
   })
 
   it('never prunes the active session even when due', async () => {
@@ -337,6 +345,8 @@ describe('Config schema + volatileCleanupStore', () => {
     expect(resolved.autoCleanupEnabled.get()).toBe(DEFAULT_CLEANUP_CONFIG.enabled)
     expect(resolved.autoCleanupMaxAgeDays.get()).toBe(DEFAULT_CLEANUP_CONFIG.maxAgeDays)
     expect(DEFAULT_MAX_AGE_DAYS).toBe(DEFAULT_CLEANUP_CONFIG.maxAgeDays)
+    // The product default is on with a 3-day idle cutoff, not a hidden opt-in.
+    expect(DEFAULT_CLEANUP_CONFIG).toEqual({ enabled: true, maxAgeDays: 3 })
   })
 
   it('the Config schema declares the file-checkpointing switch live and on by default', () => {
@@ -388,18 +398,22 @@ describe('Config schema + volatileCleanupStore', () => {
     expect(store.load()).toEqual({ enabled: false, maxAgeDays: 9 })
   })
 
-  it('save() writes under the document field names and clears a defaulted field', async () => {
+  it('save() writes the non-default field and clears the defaulted one', async () => {
     const writer = fakeWriter()
     const store = volatileCleanupStore(
       { autoCleanupEnabled: createVolatile(false), autoCleanupMaxAgeDays: createVolatile(DEFAULT_MAX_AGE_DAYS) },
       writer,
     )
     await store.save({ enabled: true, maxAgeDays: 12 })
+    // `enabled` matches the default (on) so it re-inherits; only the cutoff is pinned.
     expect(writer.updates).toEqual([{
       entryId: 'dsh-nonead-prompt-rewind',
-      patch: { autoCleanupEnabled: true, autoCleanupMaxAgeDays: 12 },
+      patch: { autoCleanupMaxAgeDays: 12 },
     }])
-    expect(writer.clears).toEqual([])
+    expect(writer.clears).toEqual([{
+      entryId: 'dsh-nonead-prompt-rewind',
+      fields: ['autoCleanupEnabled'],
+    }])
   })
 
   it('save() clears a field set to its default instead of pinning it', async () => {

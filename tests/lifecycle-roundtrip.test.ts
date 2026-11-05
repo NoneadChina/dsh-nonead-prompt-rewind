@@ -317,13 +317,13 @@ describe('live disable → enable round trip', () => {
     const [session] = userMessage()
     const status = { rawInput: 'status', agent: { session } } as never
     expect(((await cleanup.handler(status)) as { text: string }).text)
-      .toContain(enLocale['cleanup.status'].replace('{state}', enLocale['cleanup.disabled']).replace('{days}', '30'))
+      .toContain(enLocale['cleanup.status'].replace('{state}', enLocale['cleanup.disabled']).replace('{days}', '3'))
 
     // A settings write updates the reference in place; the next call must see
     // the new value without a remount.
     updateVolatile(autoCleanupEnabled, createVolatile(true))
     expect(((await cleanup.handler(status)) as { text: string }).text)
-      .toContain(enLocale['cleanup.status'].replace('{state}', enLocale['cleanup.enabled']).replace('{days}', '30'))
+      .toContain(enLocale['cleanup.status'].replace('{state}', enLocale['cleanup.enabled']).replace('{days}', '3'))
     await mounted.dispose()
   })
 
@@ -412,10 +412,10 @@ describe('live disable → enable round trip', () => {
  * service's descriptor read.
  */
 describe('host language preference', () => {
-  // The default policy (disabled, 30 days) as each dictionary renders it.
+  // The default policy (enabled, 3 days) as each dictionary renders it.
   const rendered = (dict: Record<string, string>): string => dict['cleanup.status']!
-    .replace('{state}', dict['cleanup.disabled']!)
-    .replace('{days}', '30')
+    .replace('{state}', dict['cleanup.enabled']!)
+    .replace('{days}', '3')
   const enStatus = rendered(enLocale)
   const zhStatus = rendered(zhLocale)
   const zhRow = { ns: 'locale', value: { preference: 'zh' } }

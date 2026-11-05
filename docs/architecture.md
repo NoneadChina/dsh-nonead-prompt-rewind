@@ -34,7 +34,9 @@ snapshots and history; the client never reads those directories.
 `inject = ['slots', 'sessions', 'locale', 'commandUi', 'configForms', 'connection']` and
 renders the user-visible surfaces: the `conversation.session.header.actions` registration
 that mounts the message-scoped portal bridge (`portals.tsx` — the ↶ button and popover), a
-`settings.section` registration (`id: 'rewind'`, `order: 60`) for the Rewind History page,
+`settings.section` registration (`id: 'rewind'`, `order: 60`) for the Rewind History page
+plus the matching `settings.section.icon` glyph (same id: a return arrow that loops
+back on itself, so the nav row is not the shell's neutral default),
 a `plugins.bundle.config` registration keyed by the package name for the configuration
 card, the locale dictionaries, the injected stylesheet, the Chat-view visibility wrapper,
 and the `/rewind` command decoration. The faces share **no module**: they meet at the
@@ -155,7 +157,9 @@ Storage is bounded four ways: a regular file over the per-file cap (default 8 Mi
 `maxFileBytes: 0` disables it) is never backed up; content-identical before-states become dedup
 links instead of second copies; `prune` keeps the newest 100 anchor groups per session and
 materializes a surviving link pointing into a group being dropped; the optional age-based sweep
-removes whole long-inactive session directories. A non-terminal restore journal pins the groups
+removes whole long-inactive session directories — except a directory that still holds a
+non-terminal (or unclassifiable) restore journal, or one written by a newer store version: both
+are recovery data this build must not destroy. A non-terminal restore journal pins the groups
 its actions reference, so an interrupted op stays continuable. Exact numbers and fields are in
 [format.md](format.md).
 

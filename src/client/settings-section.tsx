@@ -263,6 +263,41 @@ function SettingsIcon(): React.ReactNode {
 }
 
 /**
+ * The navigation glyph contributed to `settings.section.icon`, addressed by the
+ * same `rewind` id as the page: a line that loops back on itself under a left
+ * arrow. "Undo" says it in one stroke, and it stays legible at the shell's ~16px
+ * nav size. A clock face was rejected on purpose — the harness already uses one
+ * for the neighbouring Prompt history page, and two clock-like glyphs would
+ * read as the same entry.
+ *
+ * Colour and the icon container stay the shell's job, so the stroke is
+ * `currentColor` and the selected state needs no local styling.
+ * @param props - the shell's requested square edge in px, plus the selected flag.
+ * @returns the navigation icon element.
+ */
+export function SettingsNavIcon({ size }: Readonly<{ size: number; active: boolean }>): React.ReactNode {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.9}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {/* The return arrow: pointing back to where the conversation started. */}
+      <path d="M9.5 14.5 4 9l5.5-5.5" />
+      {/* The line that loops back around, the "history" half of the mark. */}
+      <path d="M4 9h11a5.5 5.5 0 0 1 0 11h-6.5" />
+    </svg>
+  )
+}
+
+/**
  * The Rewind history settings page.
  * @param props - locale seat, shell props, and the injected history face.
  * @returns the page content.
@@ -282,11 +317,17 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
   // closures would re-fire the request on every render.
   const face = useRef({ loadHistory, clearHistory, undoHistory, loadArchive, loadCaps })
   face.current = { loadHistory, clearHistory, undoHistory, loadArchive, loadCaps }
+  // The session a mutation was STARTED for. A response that lands after the
+  // active session changed must not write state belonging to the new one.
+  const sessionRef = useRef(sessionId)
+  sessionRef.current = sessionId
   const formatter = useMemo(() => makeRelativeFormatter(), [])
   // A response that arrives after the session/partition changed must not
   // overwrite the newer state (a fast workspace switch would otherwise show the
   // previous workspace's list).
   const loadSeq = useRef(0)
+  // Same guard for the archive viewer: the slowest of two clicks must not win.
+  const archiveSeq = useRef(0)
 
   const reload = useCallback((): void => {
     const seq = (loadSeq.current += 1)
@@ -298,6 +339,9 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
     void Promise.all([face.current.loadHistory(sessionId), face.current.loadCaps(sessionId)])
       .then(([view, reported]) => {
         if (seq !== loadSeq.current) return
+        // The page may have followed a session switch while the RPC ran: the
+        // captured session is no longer the one this page shows.
+        if (sessionRef.current !== sessionId) return
         setCaps(reported)
         setState(view === undefined ? { kind: 'unavailable' } : { kind: 'ready', view })
       })
@@ -306,6 +350,15 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
   // Reload on mount and whenever the active session (and thus the partition)
   // changes; a stale list from the previous workspace is never shown.
   useEffect(() => { reload() }, [reload])
+  // A switch invalidates everything the previous session's page was showing,
+  // including in-flight confirmations and an open archive.
+  useEffect(() => {
+    archiveSeq.current += 1
+    setArchive(undefined)
+    setNotice(undefined)
+    setConfirmingUndo(undefined)
+    setConfirmingClear(false)
+  }, [sessionId])
 
   const onClear = (): void => {
     if (sessionId === undefined) return
@@ -315,6 +368,7 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
     }
     setConfirmingClear(false)
     void face.current.clearHistory(sessionId).then(cleared => {
+      if (sessionRef.current !== sessionId) return
       if (cleared === undefined) {
         setNotice(t('settings.history.unavailable'))
         return
@@ -331,6 +385,7 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
     }
     setConfirmingUndo(undefined)
     void face.current.undoHistory(sessionId, opId).then((outcome: UndoOutcome | undefined) => {
+      if (sessionRef.current !== sessionId) return
       if (outcome === undefined) {
         setNotice(t('settings.history.unavailable'))
         return
@@ -347,12 +402,17 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
 
   const onArchive = (opId: string): void => {
     // Clicking the open row closes it; clicking another row switches to it.
+    // Every click invalidates the previous request, so a slow response cannot
+    // reopen (or replace) what the user has since chosen.
+    const seq = (archiveSeq.current += 1)
     if (archive?.opId === opId) {
       setArchive(undefined)
       return
     }
     if (sessionId === undefined) return
     void face.current.loadArchive(sessionId, opId).then((view: ArchiveView | undefined) => {
+      if (seq !== archiveSeq.current) return
+      if (sessionRef.current !== sessionId) return
       if (view === undefined) {
         setNotice(t('settings.history.archiveFailed'))
         return
@@ -367,7 +427,7 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
     const body = JSON.stringify(state.view, null, 2)
     void navigator.clipboard?.writeText(body).then(
       () => { setNotice(t('settings.history.copied')) },
-      () => { setNotice(undefined) },
+      () => { setNotice(t('settings.history.copyFailed')) },
     )
   }
 

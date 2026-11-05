@@ -72,8 +72,8 @@ export function testConfig(overrides: {
     dshHome: overrides.dshHome,
     dedup: overrides.dedup,
     fileCheckpointingEnabled: createVolatile(overrides.fileCheckpointingEnabled ?? true),
-    autoCleanupEnabled: createVolatile(overrides.autoCleanupEnabled ?? false),
-    autoCleanupMaxAgeDays: createVolatile(overrides.autoCleanupMaxAgeDays ?? 30),
+    autoCleanupEnabled: createVolatile(overrides.autoCleanupEnabled ?? true),
+    autoCleanupMaxAgeDays: createVolatile(overrides.autoCleanupMaxAgeDays ?? 3),
   }
 }
 

@@ -152,7 +152,7 @@ describe('client plugin lifecycle', () => {
     const mounted = mountClient()
     apply(mounted.ctx)
     expect(mounted.slotEntries.map(entry => entry.name))
-      .toEqual(['conversation.session.header.actions', 'plugins.bundle.config', 'settings.section'])
+      .toEqual(['conversation.session.header.actions', 'plugins.bundle.config', 'settings.section', 'settings.section.icon'])
     expect(mounted.slotEntries[0]?.id).toBe('dsh-rewind-portals')
     // The configuration form is keyed by the bundle's package name.
     expect(mounted.slotEntries[1]?.key).toBe('dsh-nonead-prompt-rewind')
@@ -160,6 +160,9 @@ describe('client plugin lifecycle', () => {
     // `market` (40) and `desktop` (100) entries.
     expect(mounted.slotEntries[2]?.id).toBe('rewind')
     expect((mounted.slotEntries[2] as unknown as { order?: number }).order).toBe(60)
+    // The nav glyph is addressed by that same section id, or it would never render.
+    expect(mounted.slotEntries[3]?.id).toBe('rewind')
+    expect((mounted.slotEntries[3] as unknown as { order?: number }).order).toBe(60)
     expect([...mounted.decorated].sort()).toEqual(['rewind', 'undo'])
     mounted.dispose()
   })

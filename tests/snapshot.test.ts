@@ -7,7 +7,7 @@ import { mkdtemp, mkdir, readdir, rm, writeFile, readFile, utimes, symlink } fro
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { reconcileTracked, SnapshotStore, isLinkEntry, defaultProbe, type ByteSource, type DiskProbe } from '../src/snapshot.ts'
+import { reconcileTracked, CURRENT_STORE_VERSION, SnapshotStore, isLinkEntry, defaultProbe, type ByteSource, type DiskProbe } from '../src/snapshot.ts'
 
 let root: string
 let store: SnapshotStore
@@ -519,6 +519,22 @@ describe('reconcileTracked (user-message boundary re-check)', () => {
     expect(await reconcileTracked(store, session, 9, tracked)).toBe(1)
   })
 
+  it('does not re-record a path that is still absent', async () => {
+    const file = join(root, 'ws', 'still-absent.txt')
+    await mkdir(dirname(file), { recursive: true })
+    // A recorded "absent" state (the file was created after the tool call and
+    // later removed). While it stays absent there is no change to record —
+    // recording one per message would fill the bounded anchor window with empty
+    // entries and evict real backups.
+    await store.recordEntry(session, { callId: 'tool', anchorSeq: 5, path: file, before: null })
+    const tracked = await store.trackedPaths(session)
+
+    expect(await reconcileTracked(store, session, 7, tracked)).toBe(0)
+    // The file appearing IS a change, so the next boundary records it.
+    await writeFile(file, 'appeared', 'utf8')
+    expect(await reconcileTracked(store, session, 8, tracked)).toBe(1)
+  })
+
   it('skips symlinked paths', async () => {
     const real = await touch('real.txt', 'x')
     const link = join(root, 'ws', 'link.txt')
@@ -921,11 +937,63 @@ describe('pruneStale', () => {
     await expect(store.exists(join(root, 'c'))).resolves.toBe(true)
   })
 
-  it('measures and prunes a journal-only session (no anchor groups)', async () => {
+  it('keeps a session whose journal cannot be classified (a recovery record is never destroyed)', async () => {
+    // A corrupt/unreadable journal is a recovery record: `pruneTerminalJournals`
+    // never destroys one, so the whole-directory age sweep must not either.
     await seedJournal('j', 'restore-journal-x.json', '{}', now() - 40 * day)
+    const rep = await store.pruneStale({ maxAgeDays: 30 })
+    expect(rep.deleted).toBe(0)
+    expect(rep.kept).toBe(1)
+    await expect(store.exists(join(root, 'j'))).resolves.toBe(true)
+  })
+
+  it('keeps a session with a non-terminal journal (an interrupted restore stays recoverable)', async () => {
+    const journal = {
+      version: 2,
+      id: 'op',
+      sessionId: 'j',
+      targetSeq: 0,
+      startedAt: 1,
+      state: 'running',
+      actions: [],
+    }
+    await seedJournal('j', 'restore-journal-op.json', JSON.stringify(journal), now() - 40 * day)
+    const rep = await store.pruneStale({ maxAgeDays: 30 })
+    expect(rep.deleted).toBe(0)
+    expect(rep.kept).toBe(1)
+    await expect(store.exists(join(root, 'j'))).resolves.toBe(true)
+  })
+
+  it('prunes an idle session whose journal is terminal', async () => {
+    const journal = {
+      version: 2,
+      id: 'op',
+      sessionId: 'j',
+      targetSeq: 0,
+      startedAt: 1,
+      state: 'completed',
+      actions: [],
+    }
+    await seedJournal('j', 'restore-journal-op.json', JSON.stringify(journal), now() - 40 * day)
     const rep = await store.pruneStale({ maxAgeDays: 30 })
     expect(rep.deleted).toBe(1)
     await expect(store.exists(join(root, 'j'))).resolves.toBe(false)
+  })
+
+  it('skips an idle session whose store was written by a newer build', async () => {
+    // Automatic cleanup must never touch recovery data a newer build owns.
+    // (The EXPLICIT clear is the documented exception and reports it.)
+    const dir = join(root, 'future')
+    await mkdir(dir, { recursive: true })
+    const marker = join(dir, 'store')
+    await writeFile(marker, String(CURRENT_STORE_VERSION + 1), 'utf8')
+    const t = new Date(now() - 40 * day)
+    await utimes(marker, t, t)
+
+    const rep = await store.pruneStale({ maxAgeDays: 30 })
+    expect(rep.deleted).toBe(0)
+    expect(rep.kept).toBe(1)
+    await expect(store.exists(dir)).resolves.toBe(true)
   })
 
   it('skips non-directories and dot-prefixed entries in the root', async () => {

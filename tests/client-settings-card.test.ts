@@ -294,7 +294,7 @@ describe('client constants and labels', () => {
   it('pins the placeholder default the host schema applies', () => {
     // The card cannot import the host module, so it copies the default; the host
     // suite pins the same value from the other side.
-    expect(DEFAULT_MAX_AGE_DAYS).toBe(30)
+    expect(DEFAULT_MAX_AGE_DAYS).toBe(3)
   })
 
   it('maps every label the shared form frame asks for', () => {

@@ -275,8 +275,11 @@ The format is versioned at three levels, and compatibility means *reading old da
 repairing it:
 
 - A session-level `store` marker and a self-describing `store` field on every entry. A missing marker (or `1`) is the legacy string format, which is
-  still read but never migrated. A value **above** the current `CURRENT_STORE_VERSION` (`2`) fails the whole operation closed: no file restore, no
-  clear, no new entry written into a store a newer build owns. The conversation rewind does not depend on snapshots and keeps working.
+  still read but never migrated. A value **above** the current `CURRENT_STORE_VERSION` (`2`) fails the automatic operations closed: no file restore, no
+  new entry, and no age sweep into a store a newer build owns. The conversation rewind does not depend on snapshots and keeps working.
+- **The explicit clear is the one deliberate exception.** `/snapshot-auto-cleanup run --current --apply` is the user's escape hatch for reclaiming
+  space, so it may remove a directory a newer build owns; the report names the newer store it deleted (`newerStoreVersion`) so the loss is visible.
+  Automatic cleanup (the age sweep) never touches such a directory.
 - Journal `version: 1` (inline strings) and `version: 2` (byte references) are both read; a present version other than 1 or 2 is corrupt.
 - `history.json` `version: 1` only; any other value moves the file aside as corrupt.
 

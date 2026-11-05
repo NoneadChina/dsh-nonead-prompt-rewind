@@ -19,7 +19,7 @@
 import type { SessionFace } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { CommandNode } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { chatNodesOf, type ChatOf, type HiddenChat } from './hidden.ts'
-import type { PreviewCall, PreviewOutcome } from './host-rpc.ts'
+import type { PreviewCall, PreviewOutcome, PreviewUncoveredPath } from './host-rpc.ts'
 import type { RewindKey } from './locales.ts'
 import { CLASS } from './styles.ts'
 
@@ -151,11 +151,16 @@ export function waitForCommand(
 ): Promise<{ kind: 'success' | 'error'; text?: string } | null> {
   return new Promise(resolve => {
     let settled = false
+    // Declared BEFORE `settle` is reachable: a store that pushes the current
+    // value on subscribe would otherwise hit the temporal dead zone when
+    // `settle` clears the timer / unsubscribes.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let unsubscribe: (() => void) | undefined
     const settle = (value: { kind: 'success' | 'error'; text?: string } | null): void => {
       if (settled) return
       settled = true
-      clearTimeout(timer)
-      unsubscribe()
+      if (timer !== undefined) clearTimeout(timer)
+      unsubscribe?.()
       resolve(value)
     }
     const check = (): void => {
@@ -168,8 +173,12 @@ export function waitForCommand(
     // not fire when the chat snapshot changes (the chat moved to the
     // `uiConversation` view), so the waiting caller passes a watch bound to
     // that view.
-    const unsubscribe = watch(check)
-    const timer = setTimeout(() => settle(null), timeoutMs)
+    try {
+      unsubscribe = watch(check)
+    } catch {
+      // A view that refuses the subscription leaves the timeout in charge.
+    }
+    timer = setTimeout(() => settle(null), timeoutMs)
     check()
   })
 }
@@ -306,6 +315,22 @@ function irreversibleNote(t: Translate): HTMLElement {
   return el('div', CLASS.popoverNote, t('confirm.irreversible'))
 }
 
+/** Paths shown per uncovered line before `+N` takes over. */
+const MAX_UNCOVERED_PATHS = 8
+
+/**
+ * One line naming recorded paths that a rewind CANNOT restore because their
+ * live size is over the backup cap. Without it the dialog would claim there is
+ * nothing to restore while silently leaving those files alone.
+ */
+function uncoveredLine(paths: readonly PreviewUncoveredPath[], t: Translate): string {
+  const shown = paths.slice(0, MAX_UNCOVERED_PATHS).map(file => file.path)
+  const hidden = paths.length - shown.length
+  return t('popover.impact.uncovered', {
+    paths: `${shown.join(', ')}${hidden > 0 ? ` +${hidden}` : ''}`,
+  })
+}
+
 /**
  * The impact block: restore/delete groups (at most 8 paths each, then a `+N`
  * tail), an `uncovered` warning, or the reason the preview failed. The confirm
@@ -323,8 +348,13 @@ function renderImpact(impact: HTMLElement, outcome: PreviewOutcome, t: Translate
   }
   const restores = outcome.files.filter(file => file.action === 'restore').map(file => file.path)
   const deletes = outcome.files.filter(file => file.action === 'delete').map(file => file.path)
+  const uncovered = outcome.uncovered ?? []
   if (restores.length === 0 && deletes.length === 0) {
-    impact.textContent = t('popover.impact.none')
+    // No planned action is NOT the same as "nothing to restore": a recorded
+    // path over the backup cap has no restorable state at all.
+    impact.textContent = uncovered.length === 0
+      ? t('popover.impact.none')
+      : uncoveredLine(uncovered, t)
     return
   }
   const lines = [
@@ -335,6 +365,7 @@ function renderImpact(impact: HTMLElement, outcome: PreviewOutcome, t: Translate
   impact.textContent = hidden > 0 ? `${lines.join('\n')}\n+${hidden}` : lines.join('\n')
   const notes: HTMLElement[] = []
   if (hidden > 0) notes.push(el('div', CLASS.popoverNote, t('confirm.truncated', { count: hidden })))
+  if (uncovered.length > 0) notes.push(el('div', CLASS.popoverNote, uncoveredLine(uncovered, t)))
   if (outcome.backupOff) notes.push(el('div', CLASS.popoverNote, t('popover.backupDisabled')))
   for (const note of notes) impact.append(note)
 }

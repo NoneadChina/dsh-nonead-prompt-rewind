@@ -89,4 +89,29 @@ describe('undoRestore', () => {
   it('refuses an id that has no journal', async () => {
     await expect(store.undoRestore(session, 'op-missing', unlink)).rejects.toThrow(/not found/u)
   })
+
+  it('stays undoable when the PLAN failed for a path that was never applied', async () => {
+    const restorable = await touch('ok.txt', 'v0')
+    await store.recordEntry(session, { callId: 'c1', anchorSeq: 5, path: restorable, before: 'v0' })
+    await writeFile(restorable, 'v1', 'utf8')
+
+    // A second recorded path whose sidecar is gone: planning it FAILS (the file
+    // itself is never touched), while the first path still restores.
+    const broken = await touch('broken.txt', 'live')
+    await store.recordEntry(session, { callId: 'c2', anchorSeq: 6, path: broken, before: 'recorded' })
+    const sidecar = (await readdir(store.anchorDir(session, 6))).find(name => name.endsWith('.before'))
+    if (sidecar === undefined) throw new Error('expected a staged sidecar')
+    await rm(join(store.anchorDir(session, 6), sidecar), { force: true })
+
+    const outcome = await store.restoreAfter(session, 5, unlink, undefined, { opId: 'op-plan-fail' })
+    expect(outcome.restored).toEqual([restorable])
+    expect(outcome.failed.map(f => f.path)).toEqual([broken])
+    expect(await readFile(broken, 'utf8')).toBe('live')
+
+    // The plan failure left `broken` alone, so every APPLIED action reached its
+    // goal: the journal is completed and the rewind stays undoable.
+    const undone = await store.undoRestore(session, 'op-plan-fail', unlink)
+    expect(undone.failed).toEqual([])
+    expect(await readFile(restorable, 'utf8')).toBe('v1')
+  })
 })

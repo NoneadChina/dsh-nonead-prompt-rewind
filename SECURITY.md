@@ -65,18 +65,18 @@ still works. An explicit clear (`run --current --apply`) or the age-based sweep,
 being a user-directed deletion of whole session directories, is deliberately not
 version-gated.
 
-**Automatic store deletion**: two things delete session snapshots. The opt-in
-`snapshot-auto-cleanup` sweep (default off) removes the whole directories of
-**long-inactive** sessions, unrelated to restores. Separately, a session's
-snapshots are cleared automatically when the conversation log's session format
-has changed (a DSH upgrade), because those backups are anchored to message
-positions that no longer line up. Both stay confined to the store root, use
-`lstat` (so they never follow a symlink out of the root), the sweep never targets
-the active session, and neither touches the conversation log. When auto-cleanup
-is disabled (the default), only the format-change clear runs, and only for an
-affected session. The store-format guard runs before that clear, so a session
-whose store is **newer** than this build understands is not cleared by it (see
-`docs/format.md`).
+**Automatic store deletion**: two things delete session snapshots. The
+`snapshot-auto-cleanup` sweep (on by default, pruning sessions idle past 3 days)
+removes the whole directories of **long-inactive** sessions, unrelated to
+restores. Separately, a session's snapshots are cleared automatically when the
+conversation log's session format has changed (a DSH upgrade), because those
+backups are anchored to message positions that no longer line up. Both stay
+confined to the store root, use `lstat` (so they never follow a symlink out of
+the root), the sweep never targets the active session, and neither touches the
+conversation log. When auto-cleanup is disabled, only the format-change clear
+runs, and only for an affected session. The store-format guard runs before that
+clear, so a session whose store is **newer** than this build understands is not
+cleared by it (see `docs/format.md`).
 
 ## Conversation integrity
 

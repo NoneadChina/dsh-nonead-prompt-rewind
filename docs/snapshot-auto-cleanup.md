@@ -12,8 +12,8 @@ rewrites rewind history, and never removes an active session's snapshots.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `autoCleanupEnabled` | `false` | Automatic cleanup is off; every snapshot is kept until you enable it or run a manual sweep. |
-| `autoCleanupMaxAgeDays` | `30` | A finished session whose newest snapshot is older than this many idle days becomes eligible for removal. Positive integers only; an invalid value can never steer the sweep into deleting everything. |
+| `autoCleanupEnabled` | `true` | Automatic cleanup runs on a fresh install; turn it off to keep every snapshot until you run a manual sweep. |
+| `autoCleanupMaxAgeDays` | `3` | A finished session whose newest snapshot is older than this many idle days becomes eligible for removal. Positive integers only; an invalid value can never steer the sweep into deleting everything. |
 
 The cutoff is idle time, not session age: the sweep compares "now" with the newest member
 stamp in each session directory, so a session still receiving writes is never eligible.

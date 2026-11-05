@@ -21,9 +21,25 @@ export interface PreviewFileImpact {
   readonly action: 'restore' | 'delete'
 }
 
+/**
+ * A recorded path whose CURRENT size is over the backup cap: no backup of that
+ * state exists, so a rewind cannot restore it. The host reports these
+ * separately from `files` for exactly that reason.
+ */
+export interface PreviewUncoveredPath {
+  readonly path: string
+  readonly size?: number
+}
+
 /** One impact probe resolved, failed, or timed out (`null`). */
 export type PreviewOutcome =
-  | { readonly kind: 'success'; readonly files: readonly PreviewFileImpact[]; readonly backupOff: boolean }
+  | {
+      readonly kind: 'success'
+      readonly files: readonly PreviewFileImpact[]
+      /** Absent on a host that predates the `uncovered` report. */
+      readonly uncovered?: readonly PreviewUncoveredPath[]
+      readonly backupOff: boolean
+    }
   | { readonly kind: 'error'; readonly text: string }
   | null
 
@@ -49,6 +65,10 @@ function isImpact(value: unknown): value is PreviewFileImpact {
   return isRecord(value)
     && typeof value['path'] === 'string'
     && (value['action'] === 'restore' || value['action'] === 'delete')
+}
+
+function isUncovered(value: unknown): value is PreviewUncoveredPath {
+  return isRecord(value) && typeof value['path'] === 'string'
 }
 
 function isCandidate(value: unknown): value is RewindCandidate {
@@ -82,7 +102,14 @@ export async function previewOverRpc(
       rewindLog.warn('preview', `RPC preview returned an invalid result for @${seq}`)
       return { kind: 'error', text: 'invalid preview response' }
     }
-    return { kind: 'success', files: value['files'], backupOff: value['backupOff'] }
+    return {
+      kind: 'success',
+      files: value['files'],
+      // Older hosts may omit `uncovered`; an absent field is "none", not a
+      // reason to reject an otherwise valid impact list.
+      uncovered: Array.isArray(value['uncovered']) ? value['uncovered'].filter(isUncovered) : [],
+      backupOff: value['backupOff'],
+    }
   } catch (error) {
     if (isAbort(error)) {
       rewindLog.warn('preview', `RPC preview timed out for @${seq}`)

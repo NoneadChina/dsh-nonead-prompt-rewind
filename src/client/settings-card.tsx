@@ -41,7 +41,7 @@ export const CARD_LOCALE_NS = 'rewind'
 export const SETTINGS_ENTRY_ID = 'dsh-nonead-prompt-rewind'
 
 /** The default max age; an empty numeric draft means "use this". */
-export const DEFAULT_MAX_AGE_DAYS = 30
+export const DEFAULT_MAX_AGE_DAYS = 3
 
 /** The editable knobs, exactly as the entry's configuration document names them. */
 export interface SettingsPolicy {
@@ -62,7 +62,8 @@ interface FieldSpec {
 
 /**
  * The `autoCleanupEnabled` field: a two-state control, so every edit is a set
- * and never a clear (the schema default already means "off").
+ * and never a clear (the schema default means "on", and the staged set keeps the
+ * user's explicit choice visible on the form).
  * @returns the field's conversion spec.
  */
 function autoCleanupEnabledField(): FieldSpec {

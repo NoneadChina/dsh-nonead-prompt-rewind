@@ -67,7 +67,7 @@ Client face — `src/client/`, fourteen files:
 | `portals.tsx` | The per-message ↶ button, its popover, `runRewindAndFill` (command + composer refill), pending retract |
 | `confirm.ts` | Single-stage confirmation dialog (DOM): impact list, one confirm, Esc / ⌘/Ctrl+Enter |
 | `host-rpc.ts` | Typed browser half of `/dsh-rewind`: `preview`, `candidates`, `history`, `history.clear`, `undo`, `caps` |
-| `settings-section.tsx` | The Rewind History page (`settings.section` `id: 'rewind'`): workspace header, history list, chain-tail undo, shared config block |
+| `settings-section.tsx` | The Rewind History page (`settings.section` `id: 'rewind'`) and its nav glyph (`settings.section.icon`): workspace header, history list, chain-tail undo, shared config block |
 | `settings-card.tsx` | The configuration card on the Plugins page (`plugins.bundle.config`), same form model as the page |
 | `hidden.ts` | Pure Chat-snapshot readers and executed-rewind cut derivation; mirrors `ENGINE_COMMAND` |
 | `candidates.ts` | Pure candidate listing and `popupSelect` row mapping |

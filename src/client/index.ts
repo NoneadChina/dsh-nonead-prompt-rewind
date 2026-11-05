@@ -49,7 +49,7 @@ import {
   type SettingsFormScope,
   type SettingsPolicy,
 } from './settings-card.tsx'
-import { SettingsSection } from './settings-section.tsx'
+import { SettingsSection, SettingsNavIcon } from './settings-section.tsx'
 
 export const name = 'dsh-rewind'
 // NOTE: deliberately NOT injecting the `uiConversation` service
@@ -448,6 +448,26 @@ export function apply(ctx: ClientContext): void {
       rewindLog.error('settings', 'settings section register failed', error)
     }
 
+    // ---- the navigation glyph for that page ----
+    // The shell draws a neutral default glyph for a section that registers no
+    // icon, and the default says nothing about rewind history. The icon slot is
+    // addressed by the SECTION's id, so the same `rewind` string keys both
+    // contributions; an unmatched id would simply never render.
+    try {
+      yield slots.inject('settings.section.icon', () => slots.register(
+        {
+          name: 'settings.section.icon',
+          id: 'rewind',
+          order: 60,
+          label: () => t('settings.nav'),
+        },
+        SettingsNavIcon,
+      ))
+    } catch (error) {
+      // Losing the glyph costs neither the page nor the shell's default icon.
+      rewindLog.error('settings', 'settings section icon register failed', error)
+    }
+
     // ---- /rewind command decoration (the standard text-driven flow) ----
     // A bare `/rewind` — picked from the slash-menu completion, or typed in
     // full and Entered — opens the harness's own popupSelect shell instead of
@@ -469,7 +489,14 @@ export function apply(ctx: ClientContext): void {
       // dead surface should that policy change.
       if (face === undefined || isRewindInertSession(face.getSnapshot())) return false
       const chat = chatOf(face)
-      return chat !== undefined && rewindCandidatesOfChat(chat as unknown as CandidateChat).length > 0
+      // The picker's OPTIONS come from the HOST (see `fetchHostCandidates`), not
+      // from this snapshot. A chat view that has not mounted yet therefore
+      // proves nothing: reporting "no target" here would let a bare `/rewind`
+      // fall through to the host's direct path, which rewinds the newest
+      // message with no confirmation dialog. Only a mounted-and-empty snapshot
+      // is evidence of "nothing to pick".
+      if (chat === undefined) return true
+      return rewindCandidatesOfChat(chat as unknown as CandidateChat).length > 0
     }
 
     /**

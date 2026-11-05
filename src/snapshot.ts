@@ -511,7 +511,12 @@ export const defaultProbe: DiskProbe = {
 
 /** Sanitize a call id into a safe file name. */
 function safeFileId(callId: string): string {
-  return callId.replace(/[^a-zA-Z0-9._-]/g, '_')
+  const safe = callId.replace(/[^a-zA-Z0-9._-]/g, '_')
+  // `.` / `..` alias the containing directory itself. A journal name is parsed
+  // back into an op id and fed to `rm(join(sessionDir, rescue, opId))`, so a
+  // crafted `..` would turn that cleanup into a recursive delete of the whole
+  // session store. Same guard as `safeSessionId`, for the same reason.
+  return safe === '.' || safe === '..' ? 'op' : safe
 }
 
 /**
@@ -985,6 +990,12 @@ export interface ClearSessionReport {
   readonly bytes: number
   /** Whether nothing was really removed (the clear only reported). */
   readonly dryRun: boolean
+  /**
+   * Set when the directory was stamped by a NEWER build. An explicit clear is
+   * the user's escape hatch and is deliberately allowed to remove it (see
+   * format.md §12), but the caller must report what it destroyed.
+   */
+  readonly newerStoreVersion?: number
 }
 
 /**
@@ -1740,6 +1751,12 @@ export class SnapshotStore {
     const skipped: string[] = []
     const failed: { path: string; message: string }[] = []
     const { actions, skipped: skippedPaths, failed: planFailed } = await this.planRestore(sessionId, targetSeq, probe)
+    // Plan-stage failures (an unreadable/dangling record) never touch the disk:
+    // the path is left alone. They are reported, but they must not keep the
+    // journal non-terminal — `undoRestore` accepts only a completed journal, so
+    // counting them would make a rewind that applied every action it planned
+    // permanently un-undoable.
+    const planFailureCount = planFailed.length
     skipped.push(...skippedPaths)
     failed.push(...planFailed)
     // Nothing to do: no journal, no extra IO — exactly the pre-journal no-op.
@@ -1794,7 +1811,7 @@ export class SnapshotStore {
       if (applied === 'restored') restored.push(action.path)
       else deleted.push(action.path)
     }
-    if (failed.length === 0) {
+    if (failed.length === planFailureCount) {
       journal.state = 'completed'
       journal.finishedAt = Date.now()
     }
@@ -2024,6 +2041,12 @@ export class SnapshotStore {
       }
     }
     if (content === null) throw new Error(`restore of ${path} has no recorded content`)
+    // Re-check the FINAL component immediately before the write. `copyFile`
+    // FOLLOWS a symlink, so a path swapped for one between planning and this
+    // write would write the checkpoint bytes through the link — outside the
+    // workspace, into a file the session never tracked. The plan already
+    // refuses links; this closes the plan→apply window too.
+    if (await isLinkPath(path)) return 'skipped'
     // A `lossyText` target only occurs when CONTINUING a legacy journal: the
     // released build had already decided to write that content, and refusing
     // now would strand a half-restored workspace. A legacy ENTRY is never
@@ -2689,20 +2712,42 @@ export class SnapshotStore {
       scanned++
 
       // Active-session guard: never delete the session the caller is driving.
+      const { size, lastActiveMs } = await dirSizeAndLastActive(full)
       if (keepActiveId !== undefined && safeSessionId(keepActiveId) === name) {
         skippedActive++
-        remainingBytes += (await dirSizeAndLastActive(full)).size
+        remainingBytes += size
         continue
       }
-      const { size, lastActiveMs } = await dirSizeAndLastActive(full)
-      if (lastActiveMs < cutoffMs) {
-        deleted++
-        freedBytes += size
-        if (!dryRun) await rm(full, { recursive: true, force: true })
-      } else {
+      if (lastActiveMs >= cutoffMs) {
         kept++
         remainingBytes += size
+        continue
       }
+      // A store this build cannot read (written by a newer build) is recovery
+      // data that build owns: the sweep must not delete it (the same
+      // fail-closed rule file restore and new entries follow).
+      const storeVersion = await this.readStoreVersion(name)
+      if (storeVersion !== null && storeVersion > CURRENT_STORE_VERSION) {
+        kept++
+        remainingBytes += size
+        continue
+      }
+      // Non-terminal (and unclassifiable) restore journals are recovery records
+      // the plugin promises never to destroy — the group-level prune honours
+      // that (`pinnedAnchors` / `pruneTerminalJournals`), so a whole-directory
+      // sweep must too. Otherwise an interrupted restore becomes unrecoverable
+      // as soon as its session sits idle for the cutoff window.
+      const { journals, corrupt } = await this.listJournals(name)
+      const hasLiveRecovery = corrupt.length > 0
+        || journals.some(journal => journal.state !== 'completed' && journal.state !== 'rolled-back')
+      if (hasLiveRecovery) {
+        kept++
+        remainingBytes += size
+        continue
+      }
+      deleted++
+      freedBytes += size
+      if (!dryRun) await rm(full, { recursive: true, force: true })
     }
     // A dry run must not touch memory (its contract): only a real sweep drops
     // the in-memory state of the sessions it removed.
@@ -2836,6 +2881,13 @@ export class SnapshotStore {
   async clearSession(sessionId: string, opts?: { readonly dryRun?: boolean }): Promise<ClearSessionReport> {
     const dryRun = opts?.dryRun ?? false
     const stats = await this.sessionStats(sessionId)
+    // An explicit clear is the user's escape hatch and is deliberately NOT
+    // gated on the store version (format.md §12). Report a newer store anyway,
+    // so removing recovery data a newer build owns is never silent.
+    const storeVersion = await this.readStoreVersion(sessionId)
+    const newerStoreVersion = storeVersion !== null && storeVersion > CURRENT_STORE_VERSION
+      ? storeVersion
+      : undefined
     if (!dryRun) {
       // Any store member means the dir is worth removing: entries, journals,
       // and the byte-only members `sessionStats` counts (a staged capture, a
@@ -2851,7 +2903,12 @@ export class SnapshotStore {
       // deleted prior entry, leaving a dangling ref.
       this.forgetSession(sessionId)
     }
-    return { sessionId, ...stats, dryRun }
+    return {
+      sessionId,
+      ...stats,
+      dryRun,
+      ...(newerStoreVersion !== undefined ? { newerStoreVersion } : {}),
+    }
   }
 
   /**
@@ -3035,6 +3092,14 @@ export async function reconcileTracked(
       // over the cap is simply never tracked, so it can never be mis-restored.
       if (store.isOverFileCap(await probe.size?.(path))) continue
       const last = await store.lastKnownContent(sessionId, path)
+      // The last recorded state was "absent": only a path that is PRESENT now is
+      // a change. Without this check every message re-recorded an absent path,
+      // filling the bounded anchor window with empty entries and evicting real
+      // backups; a probe failure (undefined) stays conservative and skips.
+      if (last === null) {
+        const stillAbsent = await probe.matches(null, path)
+        if (stillAbsent !== false) continue
+      }
       // A legacy record whose bytes were lost cannot be byte-compared: treat it
       // as "never recorded" and take a faithful byte copy (ADR-12: any doubt
       // fails toward storing MORE — and it heals the path for later rewinds).

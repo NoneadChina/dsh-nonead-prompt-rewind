@@ -79,7 +79,7 @@ The plugin follows the DSH interface language and ships copy for **Simplified Ch
 
 **Rewind history** lives under `<dsh home>/rewind-history/`, partitioned per workspace, with the newest 10 entries per workspace (adjustable through the `historyLimit` config field). Deleting it loses the Rewind history page's records only — conversations and snapshots are untouched.
 
-A **snapshot auto-cleanup** (off by default) removes the snapshot directories of long-inactive sessions, leaving the active session and chat log untouched. Configure and review it on the plugin's configuration card (the auto-cleanup switch and the idle-day cutoff), or use the `/snapshot-auto-cleanup` command:
+A **snapshot auto-cleanup** (on by default, with a 3-day idle cutoff) removes the snapshot directories of long-inactive sessions, leaving the active session and chat log untouched. Configure and review it on the plugin's configuration card (the auto-cleanup switch and the idle-day cutoff), or use the `/snapshot-auto-cleanup` command:
 
 ```
 /snapshot-auto-cleanup                 show status
@@ -177,7 +177,7 @@ This plugin deliberately stays lightweight and focused on one thing — "convers
 
 ## Security
 
-This plugin only appends rewind-marker events to the session log; it never deletes or rewrites logged history. Workspace files are written only during a rewind, in the same pass; backups are stored under `<dsh home>/rewind-snapshots/`; restores draw only from those backups. It never touches your git repository, makes no network requests, and accesses no credentials. For sessions you've left inactive for a long time, a snapshot auto-cleanup (off by default) can remove their snapshot directory in whole, leaving the active session and the chat log untouched. Full security model: [SECURITY.md](SECURITY.md).
+This plugin only appends rewind-marker events to the session log; it never deletes or rewrites logged history. Workspace files are written only during a rewind, in the same pass; backups are stored under `<dsh home>/rewind-snapshots/`; restores draw only from those backups. It never touches your git repository, makes no network requests, and accesses no credentials. For sessions you've left inactive for a long time, a snapshot auto-cleanup (on by default, with a 3-day idle cutoff) can remove their snapshot directory in whole, leaving the active session and the chat log untouched. Full security model: [SECURITY.md](SECURITY.md).
 
 ## Development
 

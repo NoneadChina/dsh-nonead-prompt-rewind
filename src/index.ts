@@ -855,6 +855,7 @@ function createRewindRpcHandler(
   checkpointingEnabled: () => boolean,
   historyOf: () => HistoryHost | undefined,
   workspaceOf: (session: Session) => HistoryWorkspace,
+  inflightOf: () => InflightRewinds,
 ): RewindRpcHandler {
   return async (endpoint, payload) => {
     try {
@@ -915,6 +916,13 @@ function createRewindRpcHandler(
       if (endpoint === 'undo') {
         const host = historyOf()
         if (host === undefined) return rpcFailure('rewind/not-undoable', 'history is unavailable')
+        // Serialize against a rewind in flight for the SAME session: its restore
+        // pass is writing those very files, so an interleaved rollback would
+        // leave the disk neither at the rewind target nor at the pre-restore
+        // state (and the stale check above the write would be meaningless).
+        if (inflightOf().has(session.id)) {
+          return rpcFailure('rewind/busy', 'a rewind is still running for this session')
+        }
         const opId = payload['opId']
         if (typeof opId !== 'string' || opId.length === 0) {
           return rpcFailure('rewind/bad-request', 'opId must be a non-empty string')
@@ -935,11 +943,17 @@ function createRewindRpcHandler(
         }
         try {
           const outcome = await store.undoRestore(entry.sessionId, opId, path => unlink(path))
-          await host.store.patch(workspace.key, opId, {
-            undoneAt: Date.now(),
-            undoOutcome: outcome.failed.length > 0 ? 'partial' : 'success',
-            undoMode: 'files',
-          })
+          // Only a FULLY applied undo is stamped. A partial pass leaves the
+          // journal in `recovery-required`; writing `undoneAt` here would lock
+          // the entry out (`already-undone`) with the files half rolled back and
+          // no way to finish — the user must be able to retry instead.
+          if (outcome.failed.length === 0) {
+            await host.store.patch(workspace.key, opId, {
+              undoneAt: Date.now(),
+              undoOutcome: 'success',
+              undoMode: 'files',
+            })
+          }
           return {
             ok: true,
             value: {
@@ -1329,9 +1343,6 @@ async function executeRewind(
         return { kind: 'error', text: t('stopFailed') }
       }
     }
-    // Idle or not, rewinding to a point before them must not keep pending
-    // steering messages alive to be delivered first on the next send.
-    dropPendingSteering(agent)
     // The command was cancelled (or its caller aborted) while we waited for
     // quiescence: stop here instead of executing a rewind nobody asked for.
     if (invocation.signal.aborted) {
@@ -1350,6 +1361,12 @@ async function executeRewind(
     } catch (error) {
       return rewindErrorResult(error)
     }
+    // Idle or not, a rewind that actually cuts the surface must not keep pending
+    // steering messages alive to be delivered first on the next send. Dropped
+    // only AFTER the plan is validated: a refused target (unknown seq, a
+    // non-human message, or one shadowed by compaction) cuts nothing, so the
+    // future those messages belong to is still live and they must survive.
+    dropPendingSteering(agent)
 
     const marker = buildMarker()
     let event: ReturnType<Session['append']>
@@ -1379,6 +1396,8 @@ async function executeRewind(
     let restore = ''
     /** The restore pass's outcome, kept for the history entry. */
     let restoreOutcome: RestoreOutcome | undefined
+    /** Why this build refused the FILE half (a newer store format, ADR-10). */
+    let restoreRefusal: string | undefined
     // One id for both the journal and the history entry, so the undo path can
     // address the journal from the entry it rendered (§6.3).
     const historyAt = Date.now()
@@ -1407,7 +1426,8 @@ async function executeRewind(
         // succeeded — the two are independent.
         if (!(error instanceof UnknownStoreVersionError)) throw error
         const version = await store.readStoreVersion(agent.session.id)
-        restore = `${t('sep.clause')}${t('storeUnsupported', { version: version ?? error.version })}`
+        restoreRefusal = t('storeUnsupported', { version: version ?? error.version })
+        restore = `${t('sep.clause')}${restoreRefusal}`
       }
       if (outcome !== undefined) {
         // The restore wrote through plain node:fs, invisible to the harness
@@ -1433,9 +1453,11 @@ async function executeRewind(
     }
 
     // Every rewind withdraws the target message and everything after it; its
-    // content is offered back in the composer for re-sending.
+    // content is offered back in the composer for re-sending. Only a restore or
+    // a delete is real file work: a `skipped` path was never written, so no
+    // journal exists for it and the entry must not claim to be undoable.
     const hadFileWork = restoreOutcome !== undefined
-      && restoreOutcome.restored.length + restoreOutcome.deleted.length + restoreOutcome.skipped.length > 0
+      && restoreOutcome.restored.length + restoreOutcome.deleted.length > 0
     // Archive the folded-away conversation BEFORE the entry is written, so the
     // entry can point at it. Best-effort: losing the archive must never turn a
     // successful rewind into an error (same contract as the history entry).
@@ -1456,12 +1478,17 @@ async function executeRewind(
       at: historyAt,
       opId: historyOpId,
       ...(archivePath !== undefined ? { archivePath } : {}),
-      outcome: restoreOutcome !== undefined && (restoreOutcome.failed.length > 0 || restoreOutcome.skipped.length > 0)
+      // A refused file half is a PARTIAL rewind, not a clean success: the
+      // conversation moved but the workspace did not, and the history page's
+      // badge is the only place the user can see that afterwards.
+      outcome: restoreRefusal !== undefined
+        || (restoreOutcome !== undefined && (restoreOutcome.failed.length > 0 || restoreOutcome.skipped.length > 0))
         ? 'partial'
         : 'success',
       hadFiles: hadFileWork,
       shadowed: plan.shadowedSeqs.length,
       preview: previewOfTarget(agent.session, plan.targetSeq),
+      ...(restoreRefusal !== undefined ? { errorCode: 'store-unsupported', errorText: restoreRefusal } : {}),
       ...(restoreOutcome === undefined
         ? {}
         : {
@@ -1631,6 +1658,7 @@ async function handleSnapshotCleanup(
   invocation: CommandInvocation,
   dshHome: string | undefined,
   trackedBySession: Map<string, Set<string>>,
+  inflight: InflightRewinds,
 ): Promise<CommandResult> {
   const parsed = parseCleanupCommand(invocation.rawInput)
   if ('error' in parsed) return { kind: 'error', text: t('cleanup.usage') }
@@ -1673,7 +1701,7 @@ async function handleSnapshotCleanup(
       // snapshots (the "clear this session now" path); without it, `run` keeps
       // its age-based stale-session sweep semantics.
       if (parsed.target === 'current') {
-        return handleClearCurrent(store, invocation, apply, trackedBySession)
+        return handleClearCurrent(store, invocation, apply, trackedBySession, inflight)
       }
       const loaded = await readCleanupPolicy()
       if (!loaded.ok) return { kind: 'error', text: t('cleanup.cfgInvalid', { detail: loaded.error }) }
@@ -1697,10 +1725,15 @@ async function handleSnapshotCleanup(
 /** Render a {@link ClearSessionReport} for the current-session clear (dry vs apply). */
 function formatClearReport(report: ClearSessionReport): string {
   const key: HostKey = report.dryRun ? 'cleanup.clearDry' : 'cleanup.clearApply'
-  return t(key, {
+  const text = t(key, {
     entries: report.entries,
     bytes: report.bytes,
   })
+  // An explicit clear is allowed to remove a newer build's store (the user's
+  // escape hatch), but that build loses this session's recovery data — say so.
+  return report.newerStoreVersion === undefined
+    ? text
+    : `${text}\n${t('cleanup.clearNewerStore', { version: report.newerStoreVersion })}`
 }
 
 /**
@@ -1723,9 +1756,10 @@ function formatClearReport(report: ClearSessionReport): string {
  * as in `executeRewind`.
  *
  * Clearing is an explicit abandonment of this session's snapshot archive, so it
- * is not gated on any restore-journal state (a clear and a restore never
- * interleave; any non-terminal journal found is a stale orphan from a previous
- * process). The memory reset is the part that must never be skipped — it is
+ * is not gated on any restore-journal state: a rewind still in flight for this
+ * session is refused explicitly (its restore pass is writing those files), and
+ * any non-terminal journal found once that guard passes is a stale orphan from
+ * a previous process. The memory reset is the part that must never be skipped — it is
  * what keeps restore resolution and the boundary re-check correct afterwards.
  */
 async function handleClearCurrent(
@@ -1733,11 +1767,22 @@ async function handleClearCurrent(
   invocation: CommandInvocation,
   apply: boolean,
   trackedBySession: Map<string, Set<string>>,
+  inflight: InflightRewinds,
 ): Promise<CommandResult> {
   const { agent } = invocation
   const sessionId = agent.session.id
   // Only the apply (mutation) path needs quiescence: a dry-run is a pure read.
   if (apply) {
+    // A rewind for this session is writing/rolling back those same files (it
+    // runs while the agent reads `idle`), so a directory `rm` now would delete
+    // the sidecars and journal the restore is reading. `agent.status` does NOT
+    // cover that window.
+    if (inflight.has(sessionId)) {
+      return {
+        kind: 'error',
+        text: t('cleanup.clearFailed', { detail: 'a rewind is still running for this session', sessionId }),
+      }
+    }
     if (agent.status !== 'idle') {
       agent.cancel({ kind: 'user' }, { keepInbox: true })
       const stopped = await waitForAgentIdle(agent, invocation.signal)
@@ -1965,7 +2010,7 @@ export function apply(ctx: Context, config?: Config): void {
         name: 'snapshot-auto-cleanup',
         description: t('cleanup.description'),
         input: { hint: t('cleanup.inputHint') },
-        handler: withHostLocale(invocation => handleSnapshotCleanup(store, invocation, dshHome, trackedBySession)),
+        handler: withHostLocale(invocation => handleSnapshotCleanup(store, invocation, dshHome, trackedBySession, inflight)),
       })
     } catch (error) {
       warnCommandUnavailable(ctx, 'snapshot-auto-cleanup', error)
@@ -2080,6 +2125,7 @@ export function apply(ctx: Context, config?: Config): void {
           () => isFileCheckpointingEnabled(config),
           () => historyHost,
           session => historyWorkspaceOf(ctx, session),
+          () => inflight,
         ),
       )
       scope.effect(() => dispose, 'dsh-rewind RPC channel')

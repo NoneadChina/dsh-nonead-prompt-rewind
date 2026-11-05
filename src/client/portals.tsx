@@ -533,7 +533,14 @@ export function collectDurableTargets(
  * data), so it is narrowed structurally here.
  */
 function inboxOf(session: SessionFace): InboxLike | undefined {
-  return session.projections.faceOf(INBOX_PROJECTION).getSnapshot() as InboxLike | undefined
+  try {
+    return session.projections.faceOf(INBOX_PROJECTION).getSnapshot() as InboxLike | undefined
+  } catch {
+    // An absent/torn-down projection must degrade to "no pending rows" — the
+    // durable ↶ buttons do not depend on this read, and an escaping throw here
+    // would abort the whole refresh and remove every button.
+    return undefined
+  }
 }
 
 /** The projection key the pending-target read and its subscription address. */

@@ -181,8 +181,14 @@ describe('a store written by a NEWER build is never touched', () => {
   it('still lets the user clear the session explicitly', async () => {
     await seedV2Store()
     await store.markStoreVersion(session, CURRENT_STORE_VERSION + 1)
+    // The escape hatch is allowed, but a dry run must name what it would
+    // destroy before anything is removed.
+    const preview = await store.clearSession(session, { dryRun: true })
+    expect(preview.newerStoreVersion).toBe(CURRENT_STORE_VERSION + 1)
+    expect(await store.exists(store.sessionDir(session))).toBe(true)
     const report = await store.clearSession(session)
     expect(report.dryRun).toBe(false)
+    expect(report.newerStoreVersion).toBe(CURRENT_STORE_VERSION + 1)
     expect(await store.exists(store.sessionDir(session))).toBe(false)
   })
 })

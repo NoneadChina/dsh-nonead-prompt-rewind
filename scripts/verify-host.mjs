@@ -527,6 +527,11 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
     const result = await call(agent, `@${futureAnchor}`)
     check('newer store fails the file restore closed, rewind still succeeds', result.kind === 'success' && /newer store format/.test(result.text), result.text)
     check('newer store leaves the workspace untouched', await readFile(futurePath, 'utf8') === 'changed again', await readFile(futurePath, 'utf8'))
+    // The audit trail must not call this a clean success: the conversation
+    // rewound but the files were refused, so the row is "partial".
+    const historyResult = await rpc(agent, 'history', { sessionId: agent.id })
+    const latest = historyResult.ok ? historyResult.value.entries.at(-1) : undefined
+    check('newer store records the rewind as partial', latest?.outcome === 'partial', JSON.stringify(latest))
   } finally {
     if (previousMarker === undefined) await rm(markerFile, { force: true })
     else await writeFile(markerFile, previousMarker, 'utf8')
@@ -999,6 +1004,19 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
   check('pending steering dropped by rewind', pendInbox.nextStep.length === 0, `nextStep=${JSON.stringify(pendInbox.nextStep)}`)
 }
 
+// 8c. a REFUSED target must not consume pending steering: nothing was cut, so
+//     the future those messages belong to is still live. (No session event
+//     exists at seq 999, so `planRewind` refuses before the append.)
+{
+  const refusedSession = buildSession('verify-refused')
+  const refusedInbox = makeInbox([{ id: 'steer-keep' }])
+  const refusedAgent = makeAgent(refusedSession.id, refusedSession, 'idle', refusedInbox)
+  const refusedResult = await call(refusedAgent, '@999')
+  check('an unknown target is refused', refusedResult.kind === 'error', refusedResult.text)
+  check('a refused rewind keeps pending steering', refusedInbox.nextStep.length === 1, `nextStep=${JSON.stringify(refusedInbox.nextStep)}`)
+  check('a refused rewind appends no marker', refusedSession.snapshotEvents().length === 4, `events=${refusedSession.snapshotEvents().length}`)
+}
+
 // 9. a cancel that never quiesces aborts the rewind (timeout path)
 {
   const stuckSession = buildSession('verify-stuck')
@@ -1142,9 +1160,13 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
   // a plain message. Guard that the descriptor keeps it.
   check('snapshot-auto-cleanup declares input', cleanupDef?.input !== undefined, JSON.stringify(cleanupDef))
 
-  // Default: disabled, and the entry still carries no user-set field.
+  // Default: enabled with a 3-day cutoff, and the entry still carries no user-set field.
   const status0 = await callCleanup('')
-  check('cleanup default status is disabled', status0.kind === 'success' && /disabled/.test(status0.text), status0.text)
+  check(
+    'cleanup default status is enabled with a 3-day cutoff',
+    status0.kind === 'success' && /enabled/.test(status0.text) && /3 day/.test(status0.text),
+    status0.text,
+  )
   check('cleanup default writes nothing', storedPolicy.autoCleanupEnabled === undefined, JSON.stringify(storedPolicy))
 
   // Enable persists enabled:true on the entry.

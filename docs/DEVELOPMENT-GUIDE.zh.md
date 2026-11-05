@@ -242,7 +242,7 @@ export const inject = ['slots', 'sessions', 'locale', 'commandUi', 'configForms'
 
 | 服务 | 用途 |
 | --- | --- |
-| `slots` | 注册 `conversation.session.header.actions`（按钮桥）、`plugins.bundle.config`（配置卡）、`settings.section`（回退历史页） |
+| `slots` | 注册 `conversation.session.header.actions`（按钮桥）、`plugins.bundle.config`（配置卡）、`settings.section`（回退历史页）与 `settings.section.icon`（导航图标） |
 | `sessions` | `binding(sessionId)` 取会话面；`list` 判断 main-view 归属；`scope` 取输入作用域 |
 | `locale` | `register('rewind', CLIENT_DICTS)`、`bind`、`subscribe` |
 | `commandUi` | `decorate({ name: 'rewind' 或 'undo', ... })`：裸命令打开 `popupSelect` |
@@ -589,7 +589,7 @@ store.recordBackup(sessionId, {callId, anchorSeq, path}, backup)
 3. 被保留的 link 若指向即将删除的组，先**物化**（把字节复制到自己旁边并改写为真实条目）再删，绝不留悬空 link；物化写失败则**在删除任何东西之前中止**。
 4. 删组后清掉该会话的去重内存状态，下一次提交重新从存活窗口 seed。
 
-跨会话清理（默认关闭）见 §6.8 与 [snapshot-auto-cleanup.zh](snapshot-auto-cleanup.zh.md)。
+跨会话清理（默认开启，失活 3 天）见 §6.8 与 [snapshot-auto-cleanup.zh](snapshot-auto-cleanup.zh.md)。
 
 ### 5.9 版本守卫（双向）
 
@@ -687,6 +687,7 @@ workspaceKeyFromRegistry(sessionId, workspaces)
 ### 6.5 设置页（`settings.section`，id `rewind`）
 
 - 注册：`slots.inject('settings.section', ...)`，`id: 'rewind'`，`order: 60`（在内置 market 40 与 desktop 100 之间），`label: t('settings.nav')` = 中文「回退历史」。
+- 导航图标：另注册 `settings.section.icon`，`id` 必须与页面同为 `'rewind'`（不匹配的 id 永不渲染；没有图标注册时外壳渲染中性默认字形）。组件只接收外壳给的 `size`（px）与 `active`，颜色与容器由外壳负责，因此图标用 `currentColor` 描边；图形取「绕回自身的线 + 左向箭头」（24 网格 / stroke 1.9），在导航位约 16px 下仍清晰。**不要用时钟造型**：宿主给相邻的「提示词历史」用的就是时钟，两个时钟形图标会被读成同一项。
 - 页面内容：工作区标题、刷新/导出 JSON/清空（二次确认）、历史列表（outcome 徽章、相对时间、`@targetSeq`、预览、文件数、撤销按钮）、能力降级提示、配置卡片嵌入。
 - 撤销按钮只在 `entry.undoable && undoneAt === undefined && entry.opId === tailOpId` 时出现。
 - 数据全部走 RPC（`history` / `history.clear` / `undo` / `caps`），页面从不读磁盘。
@@ -696,7 +697,7 @@ workspaceKeyFromRegistry(sessionId, workspaces)
 ### 6.6 插件配置卡（`plugins.bundle.config`）
 
 - 注册 key = `PLUGIN_PACKAGE`（包名），locale namespace = `rewind`。
-- 三个可编辑项：`fileCheckpointingEnabled`（默认开）、`autoCleanupEnabled`（默认关）、`autoCleanupMaxAgeDays`（默认 30）。
+- 三个可编辑项：`fileCheckpointingEnabled`（默认开）、`autoCleanupEnabled`（默认开）、`autoCleanupMaxAgeDays`（默认 3）。
 - 设置页与 Plugins 页**共用同一个** `SettingsFormModel` 与同一份草稿：一处编辑，另一处不会丢。
 - 表单不可用（宿主没有 `configForms`）时两个配置入口一起禁用，回退功能不受影响。
 - 注册失败只写日志：配置面与回退能力解耦。
@@ -712,8 +713,8 @@ workspaceKeyFromRegistry(sessionId, workspaces)
 | `maxAnchorGroups` | `100` | 每会话保留的最新锚点组 |
 | `autoSweepIntervalMs` | `86400000` | 自动清扫节流窗口 |
 | `fileCheckpointingEnabled` | `true`（volatile） | 新备份开关 |
-| `autoCleanupEnabled` | `false`（volatile） | 自动清扫开关 |
-| `autoCleanupMaxAgeDays` | `30`（volatile） | 失活天数阈值 |
+| `autoCleanupEnabled` | `true`（volatile） | 自动清扫开关 |
+| `autoCleanupMaxAgeDays` | `3`（volatile） | 失活天数阈值 |
 | `historyEnabled` | `true`（volatile） | 是否写历史 |
 | `historyLimit` | `10`（volatile，1–100） | 每工作区保留条数 |
 | `historyPreview` | `true`（volatile） | 历史里是否存消息预览 |
