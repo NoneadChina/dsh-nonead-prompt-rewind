@@ -849,13 +849,14 @@ function rpcFailure(code: string, message: string): RewindRpcResult {
 }
 
 /** Serve the impact preview, the candidate list, and the rewind history over Connection RPC. */
-function createRewindRpcHandler(
+export function createRewindRpcHandler(
   store: SnapshotStore,
   agentsOf: () => AgentLookup | undefined,
   checkpointingEnabled: () => boolean,
   historyOf: () => HistoryHost | undefined,
   workspaceOf: (session: Session) => HistoryWorkspace,
   inflightOf: () => InflightRewinds,
+  settle?: RewindSettle,
 ): RewindRpcHandler {
   return async (endpoint, payload) => {
     try {
@@ -943,6 +944,13 @@ function createRewindRpcHandler(
         }
         try {
           const outcome = await store.undoRestore(entry.sessionId, opId, path => unlink(path))
+          // The undo rewrites the worktree exactly like a rewind, so it must run
+          // the same settle step: without it the session's NEXT write of a
+          // restored file is judged against the pre-undo observation, fails as
+          // stale, and that failed call drops its before-capture — which is
+          // exactly how a file stops being checkpointed after an undo. Failure
+          // here never fails the undo itself: the disk is already correct.
+          if (settle !== undefined) await settle({ session }, outcome).catch(() => undefined)
           // Only a FULLY applied undo is stamped. A partial pass leaves the
           // journal in `recovery-required`; writing `undoneAt` here would lock
           // the entry out (`already-undone`) with the files half rolled back and
@@ -1070,14 +1078,14 @@ async function resolveObservationTarget(
  * @param agent - the rewound agent; its session is the observation owner.
  * @param outcome - the restore outcome (deleted/restored paths to sync).
  */
-async function syncRestoreObservations(
+export async function syncRestoreObservations(
   ctx: Context,
   fs: FileSystem | undefined,
-  agent: Agent,
+  agent: RewindSettleAgent,
   outcome: RestoreOutcome,
 ): Promise<void> {
   if (fs === undefined) return
-  const actor = { agent }
+  const actor = { agent: agent as Agent }
   for (const path of outcome.deleted) {
     const target = await resolveObservationTarget(fs, path)
     if (target === undefined) continue
@@ -1279,6 +1287,21 @@ export function previewOfTarget(session: Session, seq: number): string {
   }
 }
 
+/** Minimal agent shape the settle step needs: the session it belongs to. */
+export type RewindSettleAgent = { readonly session: Session }
+
+/**
+ * Post-restore bookkeeping every path that rewrites the worktree must run.
+ *
+ * WHY this is shared: a rewind and a history-page undo BOTH write through plain
+ * `node:fs`, so both invalidate the same two pieces of session state — the
+ * harness fs-observation cache (see {@link syncRestoreObservations}) and this
+ * plugin's incremental turn-anchor cache. Leaving either behind makes the next
+ * write of a restored file fail as stale (the failed call then drops its
+ * before-capture), which reads to the user as "the file stopped being tracked".
+ */
+export type RewindSettle = (agent: RewindSettleAgent, outcome: RestoreOutcome) => Promise<void>
+
 /** Execute a validated rewind: append the marker, then optionally restore files. */
 async function executeRewind(
   ctx: Context,
@@ -1289,6 +1312,7 @@ async function executeRewind(
   inflight: InflightRewinds,
   checkpointingEnabled: boolean,
   history?: HistoryHost,
+  settle?: RewindSettle,
 ): Promise<CommandResult> {
   const { agent } = invocation
   // The partition belongs to the SESSION, so it is resolved here rather than
@@ -1430,11 +1454,15 @@ async function executeRewind(
         restore = `${t('sep.clause')}${restoreRefusal}`
       }
       if (outcome !== undefined) {
-        // The restore wrote through plain node:fs, invisible to the harness
-        // observation policy: re-sync it so the session's next write of a
-        // restored/deleted file is not judged against the stale pre-restore
-        // observation (see syncRestoreObservations).
-        await syncRestoreObservations(ctx, fs, agent, outcome)
+        // One shared settle step (see RewindSettle): re-sync the harness
+        // observation policy AND drop the turn-anchor cache. The restore wrote
+        // through plain node:fs, invisible to the policy layer, and the cut
+        // moved the conversation — a later write of one of these paths must be
+        // judged against the CURRENT observation and anchored to the CURRENT
+        // turn, not to the pre-restore state.
+        const settleRewind = settle
+          ?? ((settledAgent: Agent, applied: RestoreOutcome) => syncRestoreObservations(ctx, fs, settledAgent, applied))
+        await settleRewind(agent, outcome)
         const parts: string[] = []
         if (outcome.restored.length > 0) parts.push(t('restore.count', { count: outcome.restored.length }))
         if (outcome.deleted.length > 0) parts.push(t('delete.count', { count: outcome.deleted.length }))
@@ -1534,6 +1562,7 @@ async function handleRewind(
   inflight: InflightRewinds,
   checkpointingEnabled: boolean,
   history?: HistoryHost,
+  settle?: RewindSettle,
 ): Promise<CommandResult> {
   const session = invocation.agent.session
   const input = invocation.rawInput.trim()
@@ -1550,7 +1579,7 @@ async function handleRewind(
     if (candidates.length === 0) {
       return { kind: 'error', text: t('noUserMessages') }
     }
-    return executeRewind(ctx, store, fs, invocation, `@${candidates[0]!.seq}`, inflight, checkpointingEnabled, history)
+    return executeRewind(ctx, store, fs, invocation, `@${candidates[0]!.seq}`, inflight, checkpointingEnabled, history, settle)
   }
 
   const parts = input.split(/\s+/)
@@ -1562,7 +1591,7 @@ async function handleRewind(
   if (extra !== undefined) {
     return { kind: 'error', text: t('engine.modeRemoved', { extra }) }
   }
-  return executeRewind(ctx, store, fs, invocation, target, inflight, checkpointingEnabled, history)
+  return executeRewind(ctx, store, fs, invocation, target, inflight, checkpointingEnabled, history, settle)
 }
 
 /** Whether THIS MOUNT already ran its one-shot auto-cleanup check. */
@@ -1951,6 +1980,29 @@ export function apply(ctx: Context, config?: Config): void {
   // then degrades to a no-op and the pre-existing stale-error fallback stays.
   let fsService: FileSystem | undefined
 
+  // One settle step for EVERY path that rewrites the worktree. A rewind and a
+  // history-page undo both write through plain node:fs and both move the
+  // conversation, so both must refresh the harness observation cache AND drop
+  // this session's turn-anchor cache. Without it, the session's next write of a
+  // restored file is judged against the stale pre-rewrite observation, fails as
+  // stale, and that failed call drops its before-capture — the file then
+  // silently stops being checkpointed ("undo, and it stops backing up").
+  const settleRewind: RewindSettle = async (settled, outcome) => {
+    await syncRestoreObservations(ctx, fsService, settled, outcome)
+    // The cut moved the conversation: a cached anchor names a turn that is no
+    // longer on the surface, so the next write must re-derive it from the log.
+    anchorCache.delete(settled.session)
+    // A restored path is a tracked file by definition: keep the boundary
+    // re-check updating it even when the in-memory set was seeded before this
+    // session first recorded that path.
+    let tracked = trackedBySession.get(settled.session.id)
+    if (tracked === undefined) {
+      tracked = new Set()
+      trackedBySession.set(settled.session.id, tracked)
+    }
+    for (const path of outcome.restored) tracked.add(path)
+  }
+
   ctx.effect(function* () {
     /**
      * Refresh the host language, then run the handler: a command result is the
@@ -1965,14 +2017,14 @@ export function apply(ctx: Context, config?: Config): void {
       }
     // One handler serves `/rewind` and its alias `/undo`.
     const rewindHandler = withHostLocale(
-      (invocation: CommandInvocation) => handleRewind(ctx, store, fsService, invocation, inflight, isFileCheckpointingEnabled(config), historyHost),
+      (invocation: CommandInvocation) => handleRewind(ctx, store, fsService, invocation, inflight, isFileCheckpointingEnabled(config), historyHost, settleRewind),
     )
     // The engine channel is machine-driven: a human reaching it (menu pick or
     // typed line) is sent to the front doors instead of shown its grammar.
     const engineHandler = withHostLocale(
       (invocation: CommandInvocation) => invocation.rawInput.trim() === ''
         ? Promise.resolve<CommandResult>({ kind: 'error', text: t('engine.rejected') })
-        : handleRewind(ctx, store, fsService, invocation, inflight, isFileCheckpointingEnabled(config), historyHost),
+        : handleRewind(ctx, store, fsService, invocation, inflight, isFileCheckpointingEnabled(config), historyHost, settleRewind),
     )
     // Each registration is isolated so a name another plugin owns costs only
     // that name (issue #49). Cordis rolls a failed effect back, so one
@@ -2126,6 +2178,7 @@ export function apply(ctx: Context, config?: Config): void {
           () => historyHost,
           session => historyWorkspaceOf(ctx, session),
           () => inflight,
+          settleRewind,
         ),
       )
       scope.effect(() => dispose, 'dsh-rewind RPC channel')

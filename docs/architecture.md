@@ -192,6 +192,11 @@ settings page (settings.section id 'rewind') ──RPC history / history.clear /
   state, and rejects the whole batch with `stale-undo` (listing the paths) when the user
   edited a file after the rewind. Success patches `undoneAt` / `undoOutcome` / `undoMode`;
   undo restores **files only** because the conversation nodes were removed from the surface.
+  An undo writes the worktree through plain `node:fs` exactly like a rewind, so it runs the
+  same **settle step**: it re-emits `fs/observed` for every restored/deleted path and drops
+  the session's turn-anchor cache. Skipping it makes the session's next write of a restored
+  file look stale (the write fails and drops its before-capture), which surfaces as "the file
+  stopped being checkpointed after an undo".
 - `history.clear` deletes records only. The Rewind History page renders the SAME
   `SettingsCard` as the Plugins page over one shared settings form model, so both sites edit
   one draft.
