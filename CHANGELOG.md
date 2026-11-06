@@ -6,6 +6,24 @@ and the release steps are documented in
 
 <!-- Release notes for v0.15.0 and earlier live in the GitHub Releases. -->
 
+## [0.5.4] - 2026-11-06
+
+> 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
+
+### 问题修复
+
+- **撤销回退之后，文件不再脱离追踪。** 设置页「恢复到回退之前」和 `/rewind` 一样直接改写工作区，但没有把改写后的状态同步给宿主的文件观察缓存：撤销之后对该文件的下一次写入会被判定为「版本已过期」而失败，而失败的那次写入会丢弃回退前的备份，于是这个文件从此不再产生检查点。现在撤销与回退共用同一套收尾——同步文件观察、失效该会话的轮次锚点缓存、把被恢复的路径重新纳入追踪，撤销后继续编辑的文件会照常进入回退链。
+
+---
+
+> DSH `>=0.2.1-0 <0.3.1-0` supported. Internal alpha.
+
+### Bug Fixes
+
+- **A file no longer drops out of checkpointing after an undone rewind.** The history page's "restore to before this rewind" writes the worktree directly, exactly like `/rewind`, but it never re-synced the host's file-observation cache: the session's next write of that file was judged stale and failed, and that failed call discards its before-capture — so the file stopped producing checkpoints. Undo and rewind now share one settle step (re-emit the observations, drop the session's turn-anchor cache, re-track the restored paths), so editing a file after an undo keeps it in the rewind chain.
+
+**Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.5.3...v0.5.4
+
 ## [0.5.3] - 2026-11-05
 
 > 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
