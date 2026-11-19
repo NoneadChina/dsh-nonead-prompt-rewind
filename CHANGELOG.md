@@ -6,6 +6,28 @@ and the release steps are documented in
 
 <!-- Release notes for v0.15.0 and earlier live in the GitHub Releases. -->
 
+## [0.5.5] - 2026-11-19
+
+> 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
+
+### 其他变更
+
+- **DSH 验证基线前进到 `0.2.2-rc.5`**（当前内测线）：36 个 `@deepseek-ai/dsh-*` devDependency 全部钉到该版本；声明范围不变，`0.2.2` 线此前各版本与 `0.2.1-0` 线仍准入，缺失能力继续由 `caps` 运行时探测降级。
+- **devDependencies 补齐 `@deepseek-ai/dsh-error`**：rc 线的 `dsh-llm` 在模块加载时直接 import 该包，并把它声明为自身的 peer；本仓库以 `legacy-peer-deps` 安装、不会自动拉取 peer，缺包时测试会在加载 `dsh-llm` 处报 `Cannot find package` 失败。该包只被本仓库的测试与构建使用，插件本身从不 import 它。
+- 双基线实测：`0.2.2-rc.5` 与 `0.2.2-rc.4` 上 `npm run check` 均通过（后者在隔离副本中验证）；两版本之间 239 个运行时代码文件与 638 个类型声明文件逐字节相同，差异只在 46 个包清单的版本号字段。
+
+---
+
+> DSH `>=0.2.1-0 <0.3.1-0` supported. Internal alpha.
+
+### Chores
+
+- **The DSH verification baseline moves to `0.2.2-rc.5`** (the current internal line): all 36 `@deepseek-ai/dsh-*` devDependencies are pinned to it. The declared range is unchanged, so every earlier `0.2.2` build and the `0.2.1-0` line stay admitted and missing capabilities keep degrading through the runtime `caps` probe.
+- **`@deepseek-ai/dsh-error` added to devDependencies**: the rc line's `dsh-llm` imports that package at module load and declares it as one of its own peers, and this repository installs with `legacy-peer-deps`, which does not pull peers automatically — without it the test run fails while loading `dsh-llm` with `Cannot find package`. The package is used only by this repository's tests and build; the plugin itself never imports it.
+- Verified on both baselines: `npm run check` passes on `0.2.2-rc.5` and on `0.2.2-rc.4` (the latter in an isolated copy); across the two versions all 239 runtime JS files and 638 declaration files are byte-identical, differing only in the version fields of 46 package manifests.
+
+**Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.5.4...v0.5.5
+
 ## [0.5.4] - 2026-11-06
 
 > 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
