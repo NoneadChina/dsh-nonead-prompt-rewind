@@ -10,12 +10,12 @@
 | Item | Value / where it lives |
 | --- | --- |
 | Package name | `dsh-nonead-prompt-rewind` |
-| Version | currently `0.5.1` in `package.json`; bump it there, never edit this page |
+| Version | currently `0.5.5` in `package.json`; bump it there, never edit this page |
 | Repository | `https://github.com/NoneadChina/dsh-nonead-prompt-rewind` |
 | License | MIT |
 | Node engine | `>=24.9.0` |
 | DSH range | `>=0.2.1-0 <0.3.1-0` (`engines.dsh`; the `@deepseek-ai/dsh-*` peers mirror it) |
-| DSH dev baseline | `@deepseek-ai/dsh-*` pinned to `0.2.2-alpha.3` |
+| DSH dev baseline | `@deepseek-ai/dsh-*` pinned to `0.2.2-rc.5` |
 | Packaged files | `lib/`, `cordis.patch.yml`, `locale/`, `assets/icon.svg`, `SECURITY.md`, a few docs; `CHANGELOG.md` is not shipped |
 | Automation | none: the repository contains no workflow files |
 
