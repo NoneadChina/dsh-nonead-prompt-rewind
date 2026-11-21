@@ -439,6 +439,40 @@ export const STYLE = `
   text-align: center;
   color: var(--dsw-alias-label-tertiary);
 }
+.dsh-rewind-history-empty-title {
+  margin-bottom: 4px;
+  font-size: 13px;
+  color: var(--dsw-alias-label-secondary);
+}
+/* Chain state chip: "undoable" is actionable, "superseded" is informational. */
+.dsh-rewind-history-status {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--dsw-alias-state-success-primary);
+  background: var(--dsw-alias-bg-layer-2);
+}
+.dsh-rewind-history-status.is-muted {
+  color: var(--dsw-alias-label-tertiary);
+}
+/* Loading placeholder: three skeleton rows, so the list does not jump when the
+   first history response lands. */
+.dsh-rewind-history-skeleton {
+  height: 34px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  animation: dsh-rewind-pulse 1.2s ease-in-out infinite;
+}
+@keyframes dsh-rewind-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
 /* Archive viewer: header + scrollable body + hairline separators, matching the
    prompt-history reader so the two pages read as one product. */
 .dsh-rewind-history-viewer {

@@ -40,6 +40,10 @@ export type SectionLabelKey =
   | 'settings.history.undo'
   | 'settings.history.undoConfirm'
   | 'settings.history.conversationOnly'
+  | 'settings.history.available'
+  | 'settings.history.superseded'
+  | 'settings.history.emptyHint'
+  | 'settings.history.loading'
   | 'settings.history.archive'
   | 'settings.history.archiveHide'
   | 'settings.history.archiveFailed'
@@ -151,13 +155,15 @@ function HistoryRow(props: {
   readonly now: number
   readonly formatter: Intl.RelativeTimeFormat | undefined
   readonly canUndo: boolean
+  /** Undoable, but a newer rewind of the same session owns the chain tail. */
+  readonly superseded: boolean
   readonly confirming: boolean
   readonly onUndo: (opId: string) => void
   /** Loaded archive markdown for THIS row, when its viewer is open. */
   readonly archiveText: string | undefined
   readonly onArchive: (opId: string) => void
 }): React.ReactNode {
-  const { entry, t, now, formatter, canUndo, confirming, onUndo, archiveText, onArchive } = props
+  const { entry, t, now, formatter, canUndo, superseded, confirming, onUndo, archiveText, onArchive } = props
   const undone = entry.undoneAt !== undefined
   const files = entry.files
   const fileCount = files === undefined ? 0 : files.restored + files.deleted
@@ -165,6 +171,9 @@ function HistoryRow(props: {
   // (file restore is the only undoable action). Say so on the row, otherwise a
   // missing button reads as a rendering bug.
   const conversationOnly = entry.outcome === 'success' && !entry.undoable && !undone
+  // Undoable, but a newer rewind of the same session owns the chain tail: the
+  // button would always fail, so the row explains why instead.
+  const showSuperseded = superseded && !undone
   return (
     <li className={undone ? 'dsh-rewind-history-row is-undone' : 'dsh-rewind-history-row'}>
       <div className="dsh-rewind-history-rowhead">
@@ -182,9 +191,13 @@ function HistoryRow(props: {
                 {t('settings.history.undone', { time: relativeTime(entry.undoneAt ?? entry.at, now, formatter) })}
               </span>
             )
-          : conversationOnly
-            ? <span className="dsh-rewind-history-meta">{t('settings.history.conversationOnly')}</span>
-            : null}
+          : canUndo
+            ? <span className="dsh-rewind-history-status">{t('settings.history.available')}</span>
+            : showSuperseded
+              ? <span className="dsh-rewind-history-status is-muted">{t('settings.history.superseded')}</span>
+              : conversationOnly
+                ? <span className="dsh-rewind-history-meta">{t('settings.history.conversationOnly')}</span>
+                : null}
       </div>
       {entry.messagePreview === ''
         ? null
@@ -314,7 +327,7 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
   const [confirmingUndo, setConfirmingUndo] = useState<string | undefined>(undefined)
   // At most one archive viewer is open at a time: they are long documents.
   const [archive, setArchive] = useState<{ readonly opId: string; readonly text: string } | undefined>(undefined)
-  const [notice, setNotice] = useState<string | undefined>(undefined)
+  const [notice, setNotice] = useState<{ readonly text: string; readonly error: boolean } | undefined>(undefined)
   const sessionId = currentSessionId()
   // `inject()` hands the page fresh closures on every render. Keep them in a
   // ref so the load effect keys on the SESSION only — a dependency on the
@@ -374,7 +387,7 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
     void face.current.clearHistory(sessionId).then(cleared => {
       if (sessionRef.current !== sessionId) return
       if (cleared === undefined) {
-        setNotice(t('settings.history.unavailable'))
+        setNotice({ text: t('settings.history.unavailable'), error: true })
         return
       }
       reload()
@@ -391,12 +404,12 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
     void face.current.undoHistory(sessionId, opId).then((outcome: UndoOutcome | undefined) => {
       if (sessionRef.current !== sessionId) return
       if (outcome === undefined) {
-        setNotice(t('settings.history.unavailable'))
+        setNotice({ text: t('settings.history.unavailable'), error: true })
         return
       }
       if (outcome.kind === 'error') {
         const key = UNDO_ERROR_KEYS[outcome.code]
-        setNotice(key === undefined ? `${t('undoError.failed')} (${outcome.code})` : t(key))
+        setNotice({ text: key === undefined ? `${t('undoError.failed')} (${outcome.code})` : t(key), error: true })
         return
       }
       setNotice(undefined)
@@ -418,7 +431,7 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
       if (seq !== archiveSeq.current) return
       if (sessionRef.current !== sessionId) return
       if (view === undefined) {
-        setNotice(t('settings.history.archiveFailed'))
+        setNotice({ text: t('settings.history.archiveFailed'), error: true })
         return
       }
       setNotice(undefined)
@@ -430,8 +443,8 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
     if (state.kind !== 'ready') return
     const body = JSON.stringify(state.view, null, 2)
     void navigator.clipboard?.writeText(body).then(
-      () => { setNotice(t('settings.history.copied')) },
-      () => { setNotice(t('settings.history.copyFailed')) },
+      () => { setNotice({ text: t('settings.history.copied'), error: false }) },
+      () => { setNotice({ text: t('settings.history.copyFailed'), error: true }) },
     )
   }
 
@@ -441,6 +454,11 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
   // Only that one may be undone: an older one requires the newer file state to
   // be rolled back first (§6.3).
   const tailOpId = entries.find(entry => entry.sessionId === sessionId && entry.undoneAt === undefined)?.opId
+  // Exactly one entry can be the chain tail, so this reads as "is there an undo
+  // waiting for me" rather than a running total.
+  const undoableCount = entries.filter(
+    entry => entry.sessionId === sessionId && entry.undoable && entry.undoneAt === undefined && entry.opId === tailOpId,
+  ).length
 
   return (
     <div className="dsh-rewind-history">
@@ -482,6 +500,15 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
                     {state.view.workspace.path ?? state.view.workspace.key}
                   </span>
                   <span>{t('settings.history.count', { count: entries.length })}</span>
+                  {undoableCount === 0
+                    ? null
+                    : (
+                        <span className="dsh-rewind-history-status">
+                          {t('settings.history.available')}
+                          {' · '}
+                          {undoableCount}
+                        </span>
+                      )}
                 </>
               )
             : '\u00a0'}
@@ -489,7 +516,16 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
       </div>
 
       <section className="dsh-rewind-history-card">
-        {notice === undefined ? null : <div className="dsh-rewind-history-hint">{notice}</div>}
+        {notice === undefined
+          ? null
+          : (
+              <div
+                className={notice.error ? 'dsh-rewind-history-hint is-error' : 'dsh-rewind-history-hint'}
+                role="status"
+              >
+                {notice.text}
+              </div>
+            )}
 
         {/* A degraded host keeps working; the page states what it lost instead of
             pretending the feature is intact. */}
@@ -497,12 +533,28 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
           ? <div className="dsh-rewind-history-hint">{t('settings.caps.degraded')}</div>
           : null}
 
-        {state.kind === 'loading' ? <div className="dsh-rewind-history-hint">…</div> : null}
+        {state.kind === 'loading'
+          ? (
+              <>
+                <div className="dsh-rewind-history-hint">{t('settings.history.loading')}</div>
+                <ul className="dsh-rewind-history-list" aria-hidden="true">
+                  <li className="dsh-rewind-history-skeleton" />
+                  <li className="dsh-rewind-history-skeleton" />
+                  <li className="dsh-rewind-history-skeleton" />
+                </ul>
+              </>
+            )
+          : null}
         {state.kind === 'no-session' || state.kind === 'unavailable'
           ? <div className="dsh-rewind-history-hint">{t('settings.history.unavailable')}</div>
           : null}
         {state.kind === 'ready' && entries.length === 0
-          ? <div className="dsh-rewind-history-empty">{t('settings.history.empty')}</div>
+          ? (
+              <div className="dsh-rewind-history-empty">
+                <div className="dsh-rewind-history-empty-title">{t('settings.history.empty')}</div>
+                <div>{t('settings.history.emptyHint')}</div>
+              </div>
+            )
           : null}
         {entries.length === 0 ? null : (
           <ul className="dsh-rewind-history-list">
@@ -514,6 +566,7 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
                 now={now}
                 formatter={formatter}
                 canUndo={entry.undoable && entry.undoneAt === undefined && entry.opId === tailOpId}
+                superseded={entry.sessionId === sessionId && entry.undoable && entry.undoneAt === undefined && entry.opId !== tailOpId}
                 confirming={confirmingUndo === entry.opId}
                 onUndo={onUndo}
                 archiveText={archive?.opId === entry.opId ? archive.text : undefined}

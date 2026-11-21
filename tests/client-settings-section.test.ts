@@ -258,6 +258,45 @@ describe('SettingsSection (history page)', () => {
     expect(loadHistory).toHaveBeenCalledTimes(1)
   })
 
+  it('marks a superseded row instead of hiding its undo silently', async () => {
+    const container = await mount({
+      loadHistory: async () => ({
+        workspace: { key: 'ws-w1' },
+        entries: [
+          entry({ opId: 'old', at: 1_700_000_000_000, targetSeq: 3 }),
+          entry({ opId: 'new', at: 1_700_000_000_100, targetSeq: 7 }),
+        ],
+      }),
+    })
+    const rows = [...container.querySelectorAll('.dsh-rewind-history-row')]
+    const older = rows.find(row => row.textContent?.includes('@3'))
+    const newer = rows.find(row => row.textContent?.includes('@7'))
+    expect(older?.textContent).toContain('settings.history.superseded')
+    // The older row has no undo button: only the chain tail is actionable.
+    expect(older?.querySelector('button')).toBeNull()
+    expect(newer?.textContent).toContain('settings.history.available')
+  })
+
+  it('styles a refusal as an error and announces it', async () => {
+    const undoHistory = vi.fn(async () => ({
+      kind: 'error',
+      code: 'rewind/stale-undo',
+      message: 'refusing to undo: changed after the rewind: a.ts',
+    }) as const)
+    const container = await mount({
+      loadHistory: async () => ({ workspace: { key: 'ws-w1' }, entries: [entry()] }),
+      undoHistory,
+    })
+    const undo = [...container.querySelectorAll('button')]
+      .find(button => button.textContent === 'settings.history.undo')
+    await act(async () => { undo?.click() })
+    await act(async () => { undo?.click() })
+    await act(async () => { await Promise.resolve() })
+    const hint = container.querySelector('.dsh-rewind-history-hint.is-error')
+    expect(hint?.textContent).toContain('undoError.stale')
+    expect(hint?.getAttribute('role')).toBe('status')
+  })
+
   it('names a degraded host instead of hiding the loss', async () => {
     const container = await mount({
       loadCaps: async () => ({ history: false, undo: false, fileCheckpointing: true }),
