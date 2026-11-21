@@ -5,8 +5,9 @@
  * These tests pin both halves:
  *
  *   - `collectDialog` keeps only human user messages and assistant text (no
- *     tool traffic), and `replayDialog` puts them back on the surface after a
- *     real replace cut;
+ *     tool traffic), and `replayDialog` puts the prompts back on the surface
+ *     after a real replace cut (the answers stay journal-only, because a
+ *     fabricated turn would collide with the agent's next real turn);
  *   - a conversation-only restore still writes a journal (so it can be
  *     undone) and `readRestoreJournal` hands the dialog back to the caller.
  */
@@ -64,38 +65,23 @@ describe('dialog replay', () => {
     expect(before).not.toContain('answer 1')
     expect(before).not.toContain('question 2')
 
-    expect(replayDialog(session, dialog)).toBe(4)
+    expect(replayDialog(session, dialog)).toBe(2)
     const after = session.surface.nodes.map(seq => surfaceText(session, seq)).join('\n')
     expect(after).toContain('question 1')
-    expect(after).toContain('answer 1')
     expect(after).toContain('question 2')
-    expect(after).toContain('answer 2')
-    // The replay does not resurrect the original events: seqs are new, so the
-    // surface has more nodes than the pre-rewind cut retained.
-    expect(session.surface.nodes.length).toBeGreaterThan(plan.shadowedSeqs.length)
-
-    // The chat view only shows an assistant message inside a step that really
-    // started, so every replayed answer must sit in its own synthetic turn.
-    const replayed = session.snapshotEvents().filter(
+    // The answer text stays in the journal for the history UI, but it is never
+    // injected into the live transcript: a fabricated turn collides with the
+    // next real turn (the agent owns that counter) and garbles the view.
+    expect(after).not.toContain('answer 1')
+    expect(after).not.toContain('answer 2')
+    const injectedAssistant = session.snapshotEvents().filter(
       event =>
         event.type === 'assistant/message' &&
         (event.data as { message?: { source?: { provider?: unknown } } }).message?.source?.provider === 'dsh-rewind',
     )
-    expect(replayed).toHaveLength(2)
-    for (const event of replayed) {
-      const data = event.data as { turn: number; step: number }
-      expect(data.turn).toBeGreaterThan(0)
-      expect(
-        session
-          .snapshotEvents()
-          .some(
-            other =>
-              other.type === 'step/start' &&
-              (other.data as { turn?: number }).turn === data.turn &&
-              (other.data as { step?: number }).step === data.step,
-          ),
-      ).toBe(true)
-    }
+    expect(injectedAssistant).toHaveLength(0)
+    const turns = session.snapshotEvents().filter(event => event.type === 'turn/start')
+    expect(turns).toHaveLength(2)
   })
 
   it('keeps a journal for a conversation-only restore and undoes it', async () => {

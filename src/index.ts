@@ -28,7 +28,7 @@ import type { Context, Volatile } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
-import { createAssistantMessage, createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, SessionSeq, UserMessage } from '@deepseek-ai/dsh-session'
 import type { PostToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type { WorkingDirectoryService } from '@deepseek-ai/dsh-working-directory'
@@ -795,44 +795,23 @@ export function collectDialog(session: Session, seqs: readonly number[]): Restor
  * append-only; the shadowed originals stay shadowed), so the visible dialogue
  * returns but the original event identities do not.
  *
- * The chat view only materializes an assistant message inside a turn/step that
- * actually started (`turn/start` + `step/start`), so a bare `assistant/message`
- * would be written to the log but never shown. Each replayed answer therefore
- * opens a fresh synthetic turn with one step and closes it immediately; the
- * turn number follows the highest one already in the log.
+ * Only user prompts are republished. The chat view materializes an assistant
+ * message solely inside a `turn/step` that the agent itself opened, and the
+ * agent allocates turn numbers from a private counter that ignores events this
+ * plugin appends. A fabricated turn therefore collides with the next real turn
+ * (both claim the same `turn:step` key) and the client merges or reorders the
+ * two answers. The assistant text stays in the journal, where the history UI can
+ * show it, but it is never injected into the live transcript.
  */
 export function replayDialog(session: Session, dialog: readonly RestoreDialogItem[]): number {
   let replayed = 0
-  let turn = nextTurnNumber(session)
   for (const item of dialog) {
+    if (item.role !== 'user') continue
     const content = item.content as ContentBlock[]
-    if (item.role === 'user') {
-      session.append('user/message', createUserMessage({ content, source: { kind: 'user' } }), { surfaceOp: 'append' })
-    } else {
-      const message = createAssistantMessage({
-        content,
-        source: { provider: 'dsh-rewind', model: 'restored-dialog' },
-      })
-      session.append('turn/start', { turn })
-      session.append('step/start', { turn, step: 1 })
-      session.append('assistant/message', { turn, step: 1, message, stream: [] }, { surfaceOp: 'append' })
-      session.append('step/end', { turn, step: 1 })
-      session.append('turn/end', { turn, reason: { kind: 'completed' } })
-      turn += 1
-    }
+    session.append('user/message', createUserMessage({ content, source: { kind: 'user' } }), { surfaceOp: 'append' })
     replayed += 1
   }
   return replayed
-}
-
-/** Highest turn number present in the log, plus one. */
-function nextTurnNumber(session: Session): number {
-  let highest = 0
-  for (const event of session.snapshotEvents()) {
-    const turn = (event.data as { turn?: unknown } | undefined)?.turn
-    if (typeof turn === 'number' && Number.isSafeInteger(turn) && turn > highest) highest = turn
-  }
-  return highest + 1
 }
 
 /** Resolve a raw target token into a plan, mapping failures to messages. */

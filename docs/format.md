@@ -248,15 +248,19 @@ the next snapshot recorded for that session deletes the tombstone again.
 
 ### Dialogue replay
 A journal may also carry `dialog`: the user and assistant text messages the rewind
-shadowed, captured from the shadowed seqs. Undo republishes them as **new events**
-(`surfaceOp: 'append'`) after the file rollback succeeds — the surface has no inverse of
-`replace`, so the original nodes stay shadowed forever and the log keeps both copies.
-Only human user messages and assistant `text` blocks are kept; tool calls/results,
-reasoning, usage and stream data are not replayed. The chat view only materializes an
-assistant message inside a step that actually started, so each republished answer opens
-its own synthetic turn (`turn/start` + `step/start`, then the message, `step/end` and
-`turn/end`); the turn number is the highest one already in the log plus one. A rewind
-that only shadowed dialogue (no file actions) still
+shadowed, captured from the shadowed seqs. Undo republishes the **user prompts** as new
+events (`surfaceOp: 'append'`) after the file rollback succeeds — the surface has no
+inverse of `replace`, so the original nodes stay shadowed forever and the log keeps both
+copies. Only human user messages and assistant `text` blocks are kept; tool calls/results,
+reasoning, usage and stream data are never stored.
+
+Assistant text is **not** republished into the live transcript. The chat view only
+materializes an assistant message inside a turn/step the agent opened, and the agent
+allocates turn numbers from a private counter that ignores plugin-appended events. A
+fabricated turn therefore collides with the next real turn (both claim the same
+`turn:step` node key), merging or reordering the two answers. The saved assistant text
+stays in the journal and is available to the history UI; injecting it safely needs a
+host-side replay API. A rewind that only shadowed dialogue (no file actions) still
 writes a journal with `actions: []` plus `dialog`, so a conversation-only rewind can be
 undone exactly once. A journal without `dialog` (legacy) remains file-only.
 ## 9. Rewind history partition

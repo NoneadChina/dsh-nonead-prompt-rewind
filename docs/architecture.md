@@ -200,14 +200,14 @@ back to the bytes ref and report `undo-unavailable` when it is gone. An undo int
 (`recovery-required` / `rollback-running`) is retried from the recorded rescue state rather than
 restarted.
 
-Undo also restores the conversation: the journal carries the user/assistant text messages the
-rewind shadowed, and a successful file rollback republishes them as new events. The surface has
-no inverse of `replace`, so the original nodes stay shadowed and the log keeps both copies; tool
-calls/results, reasoning and usage are not replayed. Each republished answer is mounted in its
-own synthetic turn (`turn/start` + `step/start` + `assistant/message` + `step/end` + `turn/end`),
-because the chat view only renders an assistant message inside a step that started. A rewind
-that shadowed only dialogue writes
-a journal with no file actions, so a conversation-only rewind is undoable once as well.
+Undo also restores the conversation's prompts: the journal carries the user/assistant text
+messages the rewind shadowed, and a successful file rollback republishes the user prompts as
+new events. The surface has no inverse of `replace`, so the original nodes stay shadowed and
+the log keeps both copies. Assistant text is saved but not injected into the live transcript:
+the chat view only renders an assistant message inside a turn/step the agent opened, and the
+agent's turn counter is private, so a fabricated turn collides with the next real turn and
+merges the two answers. A rewind that shadowed only dialogue writes a journal with no file
+actions, so a conversation-only rewind is undoable once as well.
 ## 6. History and the Settings page
 History is an audit trail, never a restore source:
 
