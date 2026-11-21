@@ -28,7 +28,7 @@ import type { Context, Volatile } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
-import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, SessionSeq, UserMessage } from '@deepseek-ai/dsh-session'
 import type { PostToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type { WorkingDirectoryService } from '@deepseek-ai/dsh-working-directory'
@@ -53,7 +53,7 @@ import type { ArchiveEvent } from './archive.ts'
 import z from '@deepseek-ai/schemastery'
 import { preferredLocale, translate, type HostKey, type HostLocaleId } from './locales.ts'
 import { listRewindCandidates, parseRewindTarget, planRewind, REWIND_MARKER_SOURCE, RewindError, type RewindPlan } from './rewind.ts'
-import { DEFAULT_MAX_FILE_BYTES, DEFAULT_RETENTION_DAYS, MAX_ANCHOR_GROUPS, reconcileTracked, SnapshotStore, UnknownStoreVersionError, type ClearSessionReport, type FileImpact, type GcObjectsReport, type MigrateObjectsReport, type PendingBackup, type PruneStaleReport, type RestoreOutcome, type UncoveredPath } from './snapshot.ts'
+import { DEFAULT_MAX_FILE_BYTES, DEFAULT_RETENTION_DAYS, MAX_ANCHOR_GROUPS, reconcileTracked, SnapshotStore, UnknownStoreVersionError, type ClearSessionReport, type FileImpact, type GcObjectsReport, type MigrateObjectsReport, type PendingBackup, type PruneStaleReport, type RestoreDialogItem, type RestoreJournal, type RestoreOutcome, type UncoveredPath } from './snapshot.ts'
 import { DEFAULT_MAX_SESSION_BYTES, DEFAULT_MAX_TOTAL_BYTES } from './snapshot-policy.ts'
 import { discoverWorkspaceFiles, DEFAULT_SCAN_MAX_BYTES, DEFAULT_SCAN_MAX_FILES } from './workspace-scan.ts'
 import {
@@ -761,6 +761,57 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`
 }
 
+/**
+ * Collect the text messages a rewind is about to shadow, so the one undo can
+ * put the dialogue back. Only human user messages and assistant text blocks
+ * are kept: tool calls/results belong to the discarded future and replaying
+ * them would fabricate tool state the session never observed.
+ */
+export function collectDialog(session: Session, seqs: readonly number[]): RestoreDialogItem[] {  const items: RestoreDialogItem[] = []
+  for (const seq of seqs) {
+    const event = session.eventAt(seq as SessionSeq)
+    if (event === undefined) continue
+    if (event.type === 'user/message') {
+      const data = event.data as { content?: unknown; source?: { kind?: unknown } }
+      if (data.source?.kind !== 'user') continue
+      const content = Array.isArray(data.content) ? (data.content as ContentBlock[]) : []
+      if (content.length === 0) continue
+      items.push({ role: 'user', content })
+    } else if (event.type === 'assistant/message') {
+      const data = event.data as { message?: { content?: readonly unknown[] } }
+      const content = (data.message?.content ?? []).filter(
+        block => typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text',
+      )
+      if (content.length === 0) continue
+      items.push({ role: 'assistant', content })
+    }
+  }
+  return items
+}
+
+/**
+ * Republish preserved messages after an undo. They are NEW events (the log is
+ * append-only; the shadowed originals stay shadowed), so the visible dialogue
+ * returns but the original event identities do not.
+ */
+export function replayDialog(session: Session, dialog: readonly RestoreDialogItem[]): number {
+  let replayed = 0
+  for (const item of dialog) {
+    const content = item.content as ContentBlock[]
+    if (item.role === 'user') {
+      session.append('user/message', createUserMessage({ content, source: { kind: 'user' } }), { surfaceOp: 'append' })
+    } else {
+      const message = createAssistantMessage({
+        content,
+        source: { provider: 'dsh-rewind', model: 'restored-dialog' },
+      })
+      session.append('assistant/message', { turn: 0, step: 0, message, stream: [] }, { surfaceOp: 'append' })
+    }
+    replayed += 1
+  }
+  return replayed
+}
+
 /** Resolve a raw target token into a plan, mapping failures to messages. */
 function resolveOrError(events: readonly SessionEvent[], surface: readonly number[], raw: string): RewindPlan {
   const target = parseRewindTarget(raw)
@@ -966,9 +1017,10 @@ export function createRewindRpcHandler(
         if (host === undefined) return { ok: true, value: { cleared: 0 } }
         return { ok: true, value: { cleared: await host.store.clear(workspaceOf(session).key) } }
       }
-      // Undo one completed rewind: files only (the conversation cannot be
-      // resurrected — `foldSurface` removed those nodes), at most once per
-      // entry, and only for the chain tail (§6.3).
+      // Undo one completed rewind: restore the files AND republish the
+      // dialogue the rewind shadowed (as new events — the log is append-only
+      // and the original nodes stay shadowed). At most once per entry, and
+      // only for the chain tail (§6.3).
       if (endpoint === 'undo') {
         const host = historyOf()
         if (host === undefined) return rpcFailure('rewind/not-undoable', 'history is unavailable')
@@ -998,7 +1050,27 @@ export function createRewindRpcHandler(
           return rpcFailure('rewind/undo-not-top', 'restore the newer rewind first')
         }
         try {
+          // Read the journal BEFORE the rollback flips it: it carries the
+          // dialogue the original rewind shadowed. Legacy journals have none.
+          let journal: RestoreJournal | undefined
+          try {
+            journal = await store.readRestoreJournal(entry.sessionId, opId)
+          } catch {
+            journal = undefined
+          }
           const outcome = await store.undoRestore(entry.sessionId, opId, path => unlink(path))
+          // Put the rewound-away dialogue back. It is a replay of new events
+          // (the log is append-only), so a replay failure must not invalidate
+          // the file half that already succeeded — it is reported as partial.
+          let replayed = 0
+          let replayError: string | undefined
+          if (journal?.dialog !== undefined && journal.dialog.length > 0) {
+            try {
+              replayed = replayDialog(session, journal.dialog)
+            } catch (error) {
+              replayError = error instanceof Error ? error.message : String(error)
+            }
+          }
           // The undo rewrites the worktree exactly like a rewind, so it must run
           // the same settle step: without it the session's NEXT write of a
           // restored file is judged against the pre-undo observation, fails as
@@ -1010,20 +1082,31 @@ export function createRewindRpcHandler(
           // journal in `recovery-required`; writing `undoneAt` here would lock
           // the entry out (`already-undone`) with the files half rolled back and
           // no way to finish — the user must be able to retry instead.
-          if (outcome.failed.length === 0) {
+          if (outcome.failed.length === 0 && replayError === undefined) {
             await host.store.patch(workspace.key, opId, {
               undoneAt: Date.now(),
               undoOutcome: 'success',
+              undoMode: 'files',
+            })
+          } else if (outcome.failed.length === 0) {
+            // Files are back; the dialogue replay failed. Stamp it so the
+            // record is not retried forever, but keep the failure visible.
+            await host.store.patch(workspace.key, opId, {
+              undoneAt: Date.now(),
+              undoOutcome: 'partial',
               undoMode: 'files',
             })
           }
           return {
             ok: true,
             value: {
-              kind: outcome.failed.length > 0 ? 'partial' : 'ok',
+              kind: outcome.failed.length > 0 || replayError !== undefined ? 'partial' : 'ok',
               restored: outcome.restored.length,
               deleted: outcome.deleted.length,
-              failed: outcome.failed,
+              replayed,
+              failed: replayError === undefined
+                ? outcome.failed
+                : [...outcome.failed, { path: '<conversation>', message: replayError }],
             },
           }
         } catch (error) {
@@ -1455,6 +1538,10 @@ async function executeRewind(
     // future those messages belong to is still live and they must survive.
     dropPendingSteering(agent)
 
+    // Preserve the dialogue this rewind is about to shadow. The undo record
+    // needs it; a conversation-only rewind (no file changes) still gets one.
+    const dialog = collectDialog(agent.session, plan.shadowedSeqs)
+
     const marker = buildMarker()
     let event: ReturnType<Session['append']>
     try {
@@ -1508,13 +1595,25 @@ async function executeRewind(
           // would look like "nothing changed", which is a lie about the loss.
           restoreRefusal = t('filesPruned')
           restore = `${t('sep.clause')}${restoreRefusal}`
+          if (dialog.length > 0) {
+            // The files are gone, but the dialogue still moved: keep an undo
+            // record that replays the messages without touching the disk.
+            outcome = await store.restoreAfter(
+              agent.session.id,
+              plan.targetSeq,
+              path => unlink(path),
+              undefined,
+              { opId: historyOpId, dialog, skipFiles: true },
+            )
+            restoreOutcome = outcome
+          }
         } else {
           outcome = await store.restoreAfter(
             agent.session.id,
             plan.targetSeq,
             path => unlink(path),
             undefined,
-            { opId: historyOpId },
+            { opId: historyOpId, ...(dialog.length > 0 ? { dialog } : {}) },
           )
           restoreOutcome = outcome
         }
@@ -1588,6 +1687,9 @@ async function executeRewind(
         ? 'partial'
         : 'success',
       hadFiles: hadFileWork,
+      // A conversation-only rewind is undoable too: the journal replays the
+      // shadowed messages even when no file changed.
+      undoable: hadFileWork || (restoreOutcome !== undefined && dialog.length > 0),
       shadowed: plan.shadowedSeqs.length,
       preview: previewOfTarget(agent.session, plan.targetSeq),
       ...(restoreRefusal !== undefined

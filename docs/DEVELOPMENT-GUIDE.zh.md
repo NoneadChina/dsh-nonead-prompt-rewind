@@ -678,7 +678,9 @@ workspaceKeyFromRegistry(sessionId, workspaces)
 | 10 | 已应用路径仍等于还原后状态 | `stale-undo`（附 `stalePaths`） |
 | 11 | 其它还原异常 | `undo-failed` |
 
-撤销**只还原文件**：对话保持已回退状态（`foldSurface` 已把节点移出 surface，没有反操作可调）。成功后 `patch` 条目写入 `undoneAt` / `undoOutcome` / `undoMode: 'files'`。
+撤销**同时还原文件与对话**：文件按 journal 回滚；对话把回退时被遮蔽的 user/assistant 文本消息按序 append 成**新事件**（surface 没有 `replace` 的反操作，原节点永久保持遮蔽，日志里因此保留两份）。只回放人类 user 消息与 assistant 的 `text` 块，不重放 tool call/result、reasoning、usage、stream；回放的 assistant 事件使用 `turn: 0, step: 0`。成功后 `patch` 条目写入 `undoneAt` / `undoOutcome` / `undoMode: 'files'`。
+
+纯对话回退（没有文件动作）也会写 `actions: []` + `dialog` 的 journal，因此同样可以撤销一次；没有 `dialog` 的旧 journal 仍只还原文件。回放失败不回滚已还原的文件，条目记为 `partial` 并报告 `<conversation>` 路径。
 
 completed journal 就是这份撤销记录：`prune` 只回收 `rolled-back` 的记录，最新的 completed 保留，下一次回退在写自己的 journal 之前先退休旧记录，所以每会话最多一份。撤销中途失败（`recovery-required`）或进程在 rollback 中退出（`rollback-running`）都**可以重试**：`undoRestore` 识别这两种状态后直接从 rescue 续跑，不要求重来。
 

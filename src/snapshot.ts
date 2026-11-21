@@ -347,6 +347,19 @@ export interface RestoreRunOptions {
    * never undo leave it undefined and keep the generated id.
    */
   readonly opId?: string
+  /**
+   * Conversation messages shadowed by the rewind, preserved so the one undo
+   * can republish them. Supplying dialog without file actions still creates a
+   * journal: a conversation-only rewind must be undoable too.
+   */
+  readonly dialog?: readonly RestoreDialogItem[]
+  /**
+   * Skip file planning and restore entirely, keeping only the dialogue for the
+   * undo record. Used when the target predates the retention horizon: the
+   * files cannot be restored, but the conversation still went back and must
+   * remain undoable.
+   */
+  readonly skipFiles?: boolean
 }
 
 /**
@@ -396,6 +409,17 @@ export interface RestoreJournalAction {
   readonly beforeSize?: number
 }
 
+/**
+ * One conversation message preserved so an undo can put the rewound-away
+ * dialogue back on the model-visible surface. Only text is kept: tool calls
+ * and results are not replayed (they belong to the discarded future and
+ * replaying them would fabricate tool state).
+ */
+export interface RestoreDialogItem {
+  readonly role: 'user' | 'assistant'
+  readonly content: readonly unknown[]
+}
+
 /** Durable journal for one attempted restore (written atomically). */
 export interface RestoreJournal {
   /** On-disk schema version: 2 = byte references, 1 = inline legacy strings. */
@@ -407,6 +431,8 @@ export interface RestoreJournal {
   finishedAt?: number
   state: RestoreJournalState
   readonly actions: RestoreJournalAction[]
+  /** Conversation messages the rewind shadowed, kept for the one undo. */
+  readonly dialog?: readonly RestoreDialogItem[]
   /** Set when a rollback pass failed partway (state becomes `recovery-required`). */
   rollbackError?: string
   /**
@@ -653,6 +679,15 @@ function isRestoreJournal(value: unknown): value is RestoreJournal {
   if (v.version !== undefined && v.version !== 1 && v.version !== 2) return false
   if (typeof v.state !== 'string' || !RESTORE_JOURNAL_STATES.has(v.state as RestoreJournalState)) return false
   if (!Array.isArray(v.actions)) return false
+  if (v.dialog !== undefined) {
+    if (!Array.isArray(v.dialog)) return false
+    for (const item of v.dialog) {
+      if (typeof item !== 'object' || item === null) return false
+      const d = item as Record<string, unknown>
+      if (d.role !== 'user' && d.role !== 'assistant') return false
+      if (!Array.isArray(d.content)) return false
+    }
+  }
   return v.actions.every(action => {
     if (typeof action !== 'object' || action === null) return false
     const a = action as Record<string, unknown>
@@ -713,6 +748,7 @@ function journalToJson(journal: RestoreJournal, sessionDir: string): Record<stri
     startedAt: journal.startedAt,
     ...(journal.finishedAt !== undefined ? { finishedAt: journal.finishedAt } : {}),
     state: journal.state,
+    ...(journal.dialog !== undefined && journal.dialog.length > 0 ? { dialog: journal.dialog } : {}),
     actions: journal.actions.map(action => ({
       path: action.path,
       action: action.action,
@@ -763,6 +799,7 @@ function journalFromJson(raw: Record<string, unknown>, sessionDir: string): Rest
     ...(typeof raw.finishedAt === 'number' ? { finishedAt: raw.finishedAt } : {}),
     state: raw.state as RestoreJournalState,
     actions,
+    ...(Array.isArray(raw.dialog) ? { dialog: raw.dialog as RestoreDialogItem[] } : {}),
     ...(typeof raw.rollbackError === 'string' ? { rollbackError: raw.rollbackError } : {}),
   }
 }
@@ -2360,7 +2397,9 @@ export class SnapshotStore {
     const deleted: string[] = []
     const skipped: string[] = []
     const failed: { path: string; message: string }[] = []
-    const { actions, skipped: skippedPaths, failed: planFailed } = await this.planRestore(sessionId, targetSeq, probe)
+    const { actions, skipped: skippedPaths, failed: planFailed } = opts?.skipFiles === true
+      ? { actions: [], skipped: [] as string[], failed: [] as { path: string; message: string }[] }
+      : await this.planRestore(sessionId, targetSeq, probe)
     // Plan-stage failures (an unreadable/dangling record) never touch the disk:
     // the path is left alone. They are reported, but they must not keep the
     // journal non-terminal — `undoRestore` accepts only a completed journal, so
@@ -2370,9 +2409,10 @@ export class SnapshotStore {
     skipped.push(...skippedPaths)
     failed.push(...planFailed)
     // Nothing to do: no journal, no extra IO — exactly the pre-journal no-op.
-    if (actions.length === 0) return { restored, deleted, skipped, failed }
+    // A conversation-only rewind still creates one: its undo lives here.
+    if (actions.length === 0 && (opts?.dialog?.length ?? 0) === 0) return { restored, deleted, skipped, failed }
 
-    const journal = await this.beginRestore(sessionId, targetSeq, actions, probe, opts?.opId)
+    const journal = await this.beginRestore(sessionId, targetSeq, actions, probe, opts?.opId, opts?.dialog)
     for (let i = 0; i < actions.length; i++) {
       const action = actions[i]!
       opts?.crash?.('before-action', i) // test-only: crash before the fs op
@@ -2486,6 +2526,7 @@ export class SnapshotStore {
     actions: PlannedAction[],
     probe: DiskProbe,
     callerOpId?: string,
+    dialog?: readonly RestoreDialogItem[],
   ): Promise<RestoreJournal> {
     // A new restore replaces the old undo target: retire the previous
     // `completed` journal (the only one that may be undoable) and recycle any
@@ -2565,7 +2606,12 @@ export class SnapshotStore {
       startedAt: Date.now(),
       state: 'running',
       actions: journalActions,
+      ...(dialog !== undefined && dialog.length > 0 ? { dialog } : {}),
     }
+    // A conversation-only restore has no anchors and no rescue dir, so this is
+    // the first thing that touches the session dir — it must exist before the
+    // journal write (journal IO is deliberately non-fatal otherwise).
+    await mkdir(sessionDir, { recursive: true }).catch(() => undefined)
     await this.saveJournal(journal)
     return journal
   }
@@ -2589,6 +2635,20 @@ export class SnapshotStore {
     if (journal === undefined) throw new Error(`restore journal ${file} failed schema validation`)
     journal.sourceFile = file
     return journal
+  }
+
+  /**
+   * Public read of one journal, used by the undo path to republish the
+   * conversation the original rewind shadowed. Corruption is reported as
+   * `undefined` here because the caller only needs the dialog snapshot; the
+   * files-half undo still fails loud through `undoRestore`.
+   */
+  async readRestoreJournal(sessionId: string, opId: string): Promise<RestoreJournal | undefined> {
+    try {
+      return await this.readJournal(sessionId, opId)
+    } catch {
+      return undefined
+    }
   }
 
   /**

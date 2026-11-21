@@ -25,7 +25,7 @@ Every user message carries a **↶ rewind** button in its action row. Clicking i
 
 Settings → **Rewind history** lists the last 10 rewinds for the **current workspace** (each workspace is separate and cannot see another's), with each outcome marked as Done / Partial / Failed.
 
-- **Restore to before this rewind** — only the newest not-yet-undone rewind **of the current session** can be restored, and it restores **files only, never the conversation**; each entry can be undone once.
+- **Restore to before this rewind** — only the newest not-yet-undone rewind **of the current session** can be restored; it rolls the files back and republishes the rewound user/assistant messages in order (as new events — the log keeps both copies); each entry can be undone once.
 - **Your later edits win** — if a file changed after the rewind, the restore is refused rather than overwriting your change.
 - **Export or clear** — copy the history as JSON, or clear it in one click; clearing removes records only, not snapshots or conversations.
 - The plugin's configuration card sits on the same page and toggles backups and auto-cleanup.

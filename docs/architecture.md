@@ -199,6 +199,12 @@ those sidecars no longer produces a false `stale-undo`; legacy journals without 
 back to the bytes ref and report `undo-unavailable` when it is gone. An undo interrupted mid-rollback
 (`recovery-required` / `rollback-running`) is retried from the recorded rescue state rather than
 restarted.
+
+Undo also restores the conversation: the journal carries the user/assistant text messages the
+rewind shadowed, and a successful file rollback republishes them as new events. The surface has
+no inverse of `replace`, so the original nodes stay shadowed and the log keeps both copies; tool
+calls/results, reasoning and usage are not replayed. A rewind that shadowed only dialogue writes
+a journal with no file actions, so a conversation-only rewind is undoable once as well.
 ## 6. History and the Settings page
 History is an audit trail, never a restore source:
 

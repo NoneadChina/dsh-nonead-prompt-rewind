@@ -1388,8 +1388,9 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
 }
 
 {
-  // S9: with file checkpointing off the rewind still cuts the conversation,
-  // touches no file, and records hadFiles:false / undoable:false.
+  // S9: with file checkpointing off the rewind still cuts the conversation and
+  // touches no file (hadFiles:false). The dialogue still moved, so the
+  // conversation-only undo record keeps the entry undoable.
   const noFilesSession = buildSession('verify-no-files')
   const noFilesAgent = makeAgent(noFilesSession.id, noFilesSession)
   const noFilesPath = join(wsDir, 'no-files.txt')
@@ -1413,7 +1414,7 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
     ? listed.value.entries.filter(candidate => candidate.sessionId === noFilesAgent.id).at(-1)
     : undefined
   check('S9: the entry records no file work', entry !== undefined && entry.hadFiles === false, JSON.stringify(entry))
-  check('S9: the entry is not undoable', entry !== undefined && entry.undoable === false, JSON.stringify(entry))
+  check('S9: the entry is undoable for the conversation', entry !== undefined && entry.undoable === true, JSON.stringify(entry))
 }
 
 await rm(tmpRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })

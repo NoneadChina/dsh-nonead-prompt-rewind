@@ -197,6 +197,7 @@ interface RestoreJournalJson {
   finishedAt?: number           // set on a terminal state
   state: 'running' | 'rollback-running' | 'completed' | 'rolled-back' | 'recovery-required'
   actions: RestoreJournalAction[]
+  dialog?: { role: 'user' | 'assistant'; content: unknown[] }[]  // messages the rewind shadowed
   rollbackError?: string        // a rollback pass failed partway
 }
 interface RestoreJournalAction {
@@ -241,6 +242,17 @@ fingerprint keep the old ref-based check and report `undo-unavailable` with reas
 anchor it removed. `readPrunedThrough` falls back to that tombstone, so a preview of a
 cleared session reports file restore as unavailable instead of rendering an empty diff;
 the next snapshot recorded for that session deletes the tombstone again.
+
+### Dialogue replay
+A journal may also carry `dialog`: the user and assistant text messages the rewind
+shadowed, captured from the shadowed seqs. Undo republishes them as **new events**
+(`surfaceOp: 'append'`) after the file rollback succeeds — the surface has no inverse of
+`replace`, so the original nodes stay shadowed forever and the log keeps both copies.
+Only human user messages and assistant `text` blocks are kept; tool calls/results,
+reasoning, usage and stream data are not replayed, and the republished assistant events
+use `turn: 0, step: 0`. A rewind that only shadowed dialogue (no file actions) still
+writes a journal with `actions: []` plus `dialog`, so a conversation-only rewind can be
+undone exactly once. A journal without `dialog` (legacy) remains file-only.
 ## 9. Rewind history partition
 History is a separate root with a separate schema and lifetime:
 

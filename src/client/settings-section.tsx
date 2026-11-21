@@ -7,9 +7,11 @@
  * another workspace's history.
  *
  * One entry at most is undoable: the newest not-yet-undone rewind of the active
- * session (the chain tail). Undo restores FILES only — the conversation cannot
- * come back, because `foldSurface` removed those nodes from the surface — and
- * the host refuses when a file changed after the rewind (`stale-undo`).
+ * session (the chain tail). Undo restores the files AND republishes the
+ * messages the rewind shadowed (as new events — the log is append-only), so a
+ * conversation-only rewind is undoable too. The host refuses when a file
+ * changed after the rewind (`stale-undo`), or reports the undo record as
+ * consumed/unavailable.
  *
  * Theming: every element carries a `dsh-rewind-history-*` class from
  * `./styles.ts` whose colours are dsw tokens, so light and dark follow the host
