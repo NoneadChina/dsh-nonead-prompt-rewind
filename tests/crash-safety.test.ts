@@ -526,10 +526,10 @@ describe('reconciliation auto-heal and failure reporting', () => {
     await writeFile(a, 'A1', 'utf8')
     await store.restoreAfter(session, 1, unlink) // writes a completed journal
     await store.prune(session, 1)
-    // The completed journal is the UNDO record: prune keeps it, and keeps the
-    // anchor group holding the `before` bytes its stale check reads (group 1).
-    // Group 2 is the only group the cap may drop.
-    expect((await store.entriesAfter(session, 1)).map(entry => entry.anchorSeq).sort()).toEqual([1, 3])
+    // The completed journal is the UNDO record: prune keeps it, but the group
+    // holding its `before` sidecar is evictable because the journal now carries
+    // a content fingerprint (undo hashes the disk instead of rereading it).
+    expect((await store.entriesAfter(session, 1)).map(entry => entry.anchorSeq).sort()).toEqual([3])
     expect(await store.reconcileRestores(session)).toEqual([])
     expect((await readdir(store.sessionDir(session))).some(n => journalFileName(n))).toBe(true)
 

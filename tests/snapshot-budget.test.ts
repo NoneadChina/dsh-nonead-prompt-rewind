@@ -75,7 +75,7 @@ describe('capture policy', () => {
 
 describe('byte budgets', () => {
   it('evicts the oldest anchor groups as soon as a session exceeds its budget', async () => {
-    const store = new SnapshotStore(join(root, 'snap'), { maxSessionBytes: 2_200 })
+    const store = new SnapshotStore(join(root, 'snap'), { maxSessionBytes: 2_200, retentionDays: 0 })
     const paths: string[] = []
     for (let anchor = 1; anchor <= 3; anchor++) {
       const file = await touch(`v${anchor}.txt`, `v${anchor}`)
@@ -102,7 +102,7 @@ describe('byte budgets', () => {
   it('the whole-store budget evicts idle sessions but never an active one', async () => {
     // The budget is deliberately below one session's entry metadata: whether
     // the text sidecar packs or not, the two sessions together overflow it.
-    const store = new SnapshotStore(join(root, 'snap'), { maxSessionBytes: 0, maxTotalBytes: 100 })
+    const store = new SnapshotStore(join(root, 'snap'), { maxSessionBytes: 0, maxTotalBytes: 100, retentionDays: 0 })
     const a = await touch('a.txt', 'a')
     const b = await touch('b.txt', 'b')
     await store.recordEntry('active', {
@@ -126,6 +126,40 @@ describe('byte budgets', () => {
     const remaining = await readdir(join(root, 'snap'))
     expect(remaining).toContain('active')
     expect(remaining).not.toContain('idle')
+  })
+
+  it('never evicts a whole session that is still inside the retention horizon', async () => {
+    // Fresh sessions are exactly the ones a rewind may still target: an
+    // over-budget store must not delete them just to meet the byte cap.
+    const store = new SnapshotStore(join(root, 'snap'), { maxSessionBytes: 0, maxTotalBytes: 100 })
+    const a = await touch('a.txt', 'a')
+    const b = await touch('b.txt', 'b')
+    await store.recordEntry('active', { callId: 'ca', anchorSeq: 1, path: a, before: 'x'.repeat(1_500) })
+    await store.recordEntry('idle', { callId: 'cb', anchorSeq: 1, path: b, before: 'y'.repeat(1_500) })
+    store.setActiveSessions(['active'])
+
+    await store.enforceTotalBudget()
+    const remaining = await readdir(join(root, 'snap'))
+    expect(remaining).toContain('active')
+    expect(remaining).toContain('idle')
+  })
+})
+
+describe('clear tombstones', () => {
+  it('remembers how far a cleared session reached, and forgets it on the next snapshot', async () => {
+    const store = new SnapshotStore(join(root, 'snap'))
+    const file = await touch('a.txt', 'a')
+    await store.recordEntry('s1', { callId: 'c1', anchorSeq: 1, path: file, before: 'one' })
+    await store.recordEntry('s1', { callId: 'c2', anchorSeq: 2, path: file, before: 'two' })
+    expect(await store.readPrunedThrough('s1')).toBe(0)
+
+    await store.clearSession('s1')
+    // The directory is gone, so a preview would otherwise render an empty diff
+    // and claim the target needs no file work.
+    expect(await store.readPrunedThrough('s1')).toBe(2)
+
+    await store.recordEntry('s1', { callId: 'c3', anchorSeq: 3, path: file, before: 'three' })
+    expect(await store.readPrunedThrough('s1')).toBe(0)
   })
 })
 

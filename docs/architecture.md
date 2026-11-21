@@ -169,15 +169,20 @@ materializes a surviving link pointing into a group being dropped. A retention h
 (`retentionDays`, default 7) additionally evicts groups older than it even below the count cap,
 while always keeping the newest 30; the highest evicted sequence is persisted as a per-session
 `pruned` watermark, so a preview or rewind targeting older history reports the file half as
-unavailable instead of presenting an empty plan as complete. Two byte budgets sit on top:
-`maxSessionBytes` (default 256 MiB) evicts the oldest whole anchor groups of a session as soon as a
-commit crosses it, and `maxTotalBytes` (default 2 GiB) evicts the least-recently-active session
-directories (never a session currently being driven) down to 80% of the cap. Finally, the optional
+unavailable instead of presenting an empty plan as complete. Two byte budgets sit on top, and
+neither may evict anything the horizon still covers: `maxSessionBytes` (default 256 MiB) evicts
+only anchor groups **older than the horizon** as a commit crosses it (a busy session may therefore
+stay above the cap — the horizon and capture policy are what bound it), and `maxTotalBytes`
+(default 2 GiB) evicts the least-recently-active session directories only when their last activity
+is older than the horizon, never a session currently being driven, one holding a completed undo
+record, or one with a non-terminal journal. Finally, the optional
 age-based sweep removes whole long-inactive session directories — except a directory that still
 holds a non-terminal (or unclassifiable) restore journal, or one written by a newer store version:
 both are recovery data this build must not destroy. A non-terminal restore journal pins the groups
-its actions reference, so an interrupted op stays continuable. Exact numbers and fields are in
-[format.md](format.md).
+its actions reference, so an interrupted op stays continuable. A cleared session leaves a
+root-level `.cleared/<sessionId>` tombstone carrying the highest anchor removed, so a later preview
+still reports the file half as unavailable instead of an empty plan; the next snapshot for that
+session drops the tombstone. Exact numbers and fields are in [format.md](format.md).
 
 Restore is journaled rather than best-effort: `planRestore` reconciles the earliest entry per
 path (at/after the target) with the current disk and plans only actions that would change it;
@@ -187,10 +192,13 @@ failure is recorded and never aborts the pass, and deleting an already-absent fi
 A failure-free pass ends `completed`; otherwise the journal stays open — `reconcileRestores`
 reports where an interrupted op stopped, `continueRestore` finishes it, `rollbackRestore`
 returns to the exact pre-restore state, and `undoRestore` is the user-facing "undo this rewind".
-The newest completed journal is the session's undo record: pruning keeps it (and the `before`
-groups its stale check reads) while recycling `rolled-back` ones, and a later rewind retires it
-before writing its own. An undo interrupted mid-rollback (`recovery-required` /
-`rollback-running`) is retried from the recorded rescue state rather than restarted.
+The newest completed journal is the session's undo record: pruning keeps it while recycling
+`rolled-back` ones, and a later rewind retires it before writing its own. An undo's stale check
+compares each path to the journal's SHA-256 fingerprint of the logical `before` bytes, so pruning
+those sidecars no longer produces a false `stale-undo`; legacy journals without a fingerprint fall
+back to the bytes ref and report `undo-unavailable` when it is gone. An undo interrupted mid-rollback
+(`recovery-required` / `rollback-running`) is retried from the recorded rescue state rather than
+restarted.
 ## 6. History and the Settings page
 History is an audit trail, never a restore source:
 

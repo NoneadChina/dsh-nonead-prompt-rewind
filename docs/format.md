@@ -205,6 +205,8 @@ interface RestoreJournalAction {
   mode?: number                 // recorded target permissions
   rescueMode?: number           // recorded pre-restore permissions
   parent?: string               // checkpoint-time location pin, copied from the entry
+  beforeSha256?: string         // SHA-256 of the logical `before` bytes (post-codec)
+  beforeSize?: number           // logical size those bytes decode to
   done: boolean                 // the fs op completed and was marked
   failed?: string               // per-action failure message (the pass never aborts)
 }
@@ -224,6 +226,18 @@ Reconciliation reports a still non-terminal op as `interrupted`, and a `recovery
 when a rollback could not complete or the journal is corrupt; the journal's own `state` stays
 non-terminal in both cases. A `recovery-required` or `rollback-running` journal can be
 retried: the next undo resumes the rollback from the recorded rescue state.
+
+An undo's stale check compares the disk against the **logical** `before` bytes. A journal
+action that carries `beforeSha256`/`beforeSize` is judged by hashing the current file
+(post-codec size), so pruning that action's sidecar no longer turns a still-valid undo into
+`stale-undo`; such a record also stops pinning its anchor group. Legacy journals without a
+fingerprint keep the old ref-based check and report `undo-unavailable` with reason
+`snapshot-pruned` when the ref is gone — never `stale-undo`.
+
+`clearSession` writes a root-level `.cleared/<sessionId>` tombstone containing the highest
+anchor it removed. `readPrunedThrough` falls back to that tombstone, so a preview of a
+cleared session reports file restore as unavailable instead of rendering an empty diff;
+the next snapshot recorded for that session deletes the tombstone again.
 ## 9. Rewind history partition
 History is a separate root with a separate schema and lifetime:
 

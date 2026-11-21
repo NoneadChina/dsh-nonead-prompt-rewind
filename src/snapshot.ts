@@ -75,6 +75,13 @@ const RESCUE_DIR = 'rescue'
  * an entry's source of truth.
  */
 const OBJECTS_DIR = 'objects'
+/**
+ * Root-level tombstones for sessions whose snapshot directory was cleared. The
+ * marker records the highest anchor the clear removed, so preview can say
+ * "files unavailable" instead of showing an empty diff — a deleted directory
+ * otherwise looks exactly like "this target needs no file changes".
+ */
+const CLEARED_DIR = '.cleared'
 
 /** Journal-file prefix of the current format. */
 const JOURNAL_PREFIX = 'journal-'
@@ -379,6 +386,14 @@ export interface RestoreJournalAction {
   done: boolean
   /** Per-action failure message; the restore pass never aborts. */
   failed?: string
+  /**
+   * SHA-256 of the restored content's LOGICAL bytes (decoded, not the packed
+   * sidecar) and its length. Undo judges "did the user touch this file?" by
+   * hashing the disk, so it no longer needs the `before` sidecar to survive a
+   * budget prune. Absent in journals written before this field existed.
+   */
+  readonly beforeSha256?: string
+  readonly beforeSize?: number
 }
 
 /** Durable journal for one attempted restore (written atomically). */
@@ -644,6 +659,8 @@ function isRestoreJournal(value: unknown): value is RestoreJournal {
     if (typeof a.path !== 'string' || (a.action !== 'restore' && a.action !== 'delete')) return false
     if (typeof a.done !== 'boolean') return false
     if (!isRawJournalRef(a.before) || !isRawJournalRef(a.rescue)) return false
+    if (a.beforeSha256 !== undefined && (typeof a.beforeSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(a.beforeSha256))) return false
+    if (a.beforeSize !== undefined && (typeof a.beforeSize !== 'number' || !Number.isSafeInteger(a.beforeSize) || a.beforeSize < 0)) return false
     // A restore action must carry target content; a delete must not.
     if (a.action === 'restore' && a.before === null) return false
     return true
@@ -705,6 +722,8 @@ function journalToJson(journal: RestoreJournal, sessionDir: string): Record<stri
       ...(action.mode !== undefined ? { mode: action.mode } : {}),
       ...(action.rescueMode !== undefined ? { rescueMode: action.rescueMode } : {}),
       ...(action.parent !== undefined ? { parent: action.parent } : {}),
+      ...(action.beforeSha256 !== undefined ? { beforeSha256: action.beforeSha256 } : {}),
+      ...(action.beforeSize !== undefined ? { beforeSize: action.beforeSize } : {}),
       done: action.done,
       ...(action.failed !== undefined ? { failed: action.failed } : {}),
     })),
@@ -728,6 +747,8 @@ function journalFromJson(raw: Record<string, unknown>, sessionDir: string): Rest
       ...(typeof value.mode === 'number' ? { mode: value.mode } : {}),
       ...(typeof value.rescueMode === 'number' ? { rescueMode: value.rescueMode } : {}),
       ...(typeof value.parent === 'string' && value.parent.length > 0 ? { parent: value.parent } : {}),
+      ...(typeof value.beforeSha256 === 'string' ? { beforeSha256: value.beforeSha256 } : {}),
+      ...(typeof value.beforeSize === 'number' ? { beforeSize: value.beforeSize } : {}),
       done: value.done as boolean,
       ...(typeof value.failed === 'string' ? { failed: value.failed } : {}),
     })
@@ -777,6 +798,22 @@ function shortHash(value: string): string {
  */
 async function hashFile(file: string): Promise<string> {
   return createHash('sha256').update(await readFile(file)).digest('hex')
+}
+
+/** SHA-256 of in-memory bytes (the undo fingerprint stores the LOGICAL bytes). */
+function hashBytes(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+/**
+ * True when `path` still holds exactly `hash`/`size`. A missing file is never
+ * a match: an undo restores content, so the path must exist with that content.
+ */
+async function fileMatchesFingerprint(path: string, hash: string, size: number): Promise<boolean> {
+  const stat0 = await lstat(path).catch(() => undefined)
+  if (stat0 === undefined || !stat0.isFile()) return false
+  if (stat0.size !== size) return false
+  return (await hashFile(path)) === hash
 }
 
 /** The sidecar file name of one entry file (`<base>.json` → `<base>.before`). */
@@ -1490,11 +1527,13 @@ export class SnapshotStore {
     const seqs = await this.anchorSeqs(sessionId)
     if (seqs.length <= 1) return this.sessionUsage(sessionId)
     const sizes = new Map<number, number>()
+    const mtimes = new Map<number, number>()
     let total = 0
     for (const seq of seqs) {
       const measured = await dirSizeAndLastActive(this.anchorDir(sessionId, seq)).catch(() => undefined)
       const bytes = measured?.size ?? 0
       sizes.set(seq, bytes)
+      mtimes.set(seq, measured?.lastActiveMs ?? 0)
       total += bytes
     }
     if (total <= targetBytes) {
@@ -1502,9 +1541,16 @@ export class SnapshotStore {
       return total
     }
     const newest = seqs[seqs.length - 1]!
+    // Groups inside the retention horizon are not evictable: a rewind target
+    // that still sits in that window must keep its before-bytes. The budget can
+    // therefore stay exceeded for a busy session — the horizon sweep and the
+    // capture policy are what bound it, by design.
+    const cutoff = Date.now() - this.retentionDays * 86_400_000
     let drop = 0
     for (const seq of seqs) {
-      if (total <= targetBytes || seq === newest) break
+      if (total <= targetBytes) break
+      if (seq === newest) break
+      if ((mtimes.get(seq) ?? 0) >= cutoff) continue
       total -= sizes.get(seq) ?? 0
       drop++
     }
@@ -1565,11 +1611,19 @@ export class SnapshotStore {
     }
     if (total <= this.maxTotalBytes) return total
     const target = Math.floor(this.maxTotalBytes * 0.8)
+    // A whole-session eviction destroys every snapshot in it, so it is only
+    // allowed once the session has been idle past the retention horizon. While
+    // a session is inside that horizon, its rewinds and its undo record must
+    // keep working — the global budget stays a best-effort bound there, and
+    // the age sweep is what eventually reclaims the space.
+    const cutoff = Date.now() - this.retentionDays * 86_400_000
     rows.sort((a, b) => a.lastActiveMs - b.lastActiveMs)
     for (const row of rows) {
       if (total <= target) break
+      if (row.lastActiveMs >= cutoff) continue
       if (this.activeSessionIds.has(row.name)) continue
       if (await this.hasUnfinishedRecovery(row.name)) continue
+      if (await this.hasUndoRecord(row.name)) continue
       await this.clearSession(row.name, { gc: false })
       this.sessionBytes.delete(row.name)
       total -= row.bytes
@@ -1580,6 +1634,16 @@ export class SnapshotStore {
     await this.gcObjects().catch(() => undefined)
     await this.forgetMissingSessions()
     return total
+  }
+
+  /**
+   * Whether a session still owns an undo record that has not been used yet.
+   * Such a record pins its rescue copy, and clearing the session would turn a
+   * promised undo into `undo-unavailable`.
+   */
+  private async hasUndoRecord(sessionId: string): Promise<boolean> {
+    const { journals } = await this.listJournals(sessionId)
+    return journals.some((journal) => journal.state === 'completed')
   }
 
   /**
@@ -1866,6 +1930,9 @@ export class SnapshotStore {
     await this.assertKnownStoreVersion(sessionId)
     const dir = this.anchorDir(sessionId, entry.anchorSeq)
     await mkdir(dir, { recursive: true })
+    // A session that records again is live again: the clear tombstone (if any)
+    // no longer describes it.
+    await rm(this.clearedTombstonePath(sessionId), { force: true })
     const file = join(dir, entryFileName(entry.callId))
     const selfRef = this.entryRefOf(sessionId, entry.callId, entry.anchorSeq)
     // Content dedup: when the new content equals the path's most recent
@@ -2435,6 +2502,21 @@ export class SnapshotStore {
       // Pre-restore permissions (best-effort): a rollback must be able to put
       // back what the restore found, including a read-only file's bits.
       const rescueMode = (await stat(action.path).catch(() => undefined))?.mode
+      // Fingerprint the restored content BEFORE the journal is written. Undo
+      // compares the disk against this hash, so a later budget prune of the
+      // `before` sidecar can no longer turn a valid undo into a false "stale".
+      let beforeSha256: string | undefined
+      let beforeSize: number | undefined
+      if (action.action === 'restore' && action.before !== null) {
+        try {
+          const bytes = await sourceBytes(action.before)
+          beforeSha256 = hashBytes(bytes)
+          beforeSize = bytes.length
+        } catch {
+          // Unreadable target: leave the action unhashed. The legacy stale
+          // check still runs; it reports `snapshot-pruned` if the ref is gone.
+        }
+      }
       const journalAction: RestoreJournalAction = {
         path: action.path,
         action: action.action,
@@ -2442,6 +2524,8 @@ export class SnapshotStore {
         rescue,
         ...(action.action === 'restore' && action.mode !== undefined ? { mode: action.mode } : {}),
         ...(action.parent !== undefined ? { parent: action.parent } : {}),
+        ...(beforeSha256 !== undefined ? { beforeSha256 } : {}),
+        ...(beforeSize !== undefined ? { beforeSize } : {}),
         ...(rescueMode !== undefined ? { rescueMode: rescueMode & 0o7777 } : {}),
         done: false,
       }
@@ -2871,11 +2955,33 @@ export class SnapshotStore {
     }
     if (journal.state === 'completed') {
       const stale: string[] = []
+      const pruned: string[] = []
       for (const action of journal.actions) {
         // A failed action never applied, so its path is not ours to judge.
         if (action.failed !== undefined) continue
+        if (action.beforeSha256 !== undefined && action.beforeSize !== undefined) {
+          // Hash-based judgement: independent of whether the `before` sidecar
+          // survived a budget prune.
+          const intact = await fileMatchesFingerprint(action.path, action.beforeSha256, action.beforeSize)
+          if (!intact) stale.push(action.path)
+          continue
+        }
+        // Legacy journal (no fingerprint): the `before` sidecar must still be
+        // there, otherwise the refusal is "record gone", not "you edited it".
+        if (action.before !== null && action.before.kind === 'blob') {
+          const present = await lstat(action.before.path).catch(() => undefined)
+          if (present === undefined) {
+            pruned.push(action.path)
+            continue
+          }
+        }
         const intact = await probe.matches(action.before, action.path).catch(() => false)
         if (intact !== true) stale.push(action.path)
+      }
+      if (pruned.length > 0) {
+        const error = new Error(`cannot undo: the snapshot this rewind needs was pruned (${pruned.join(', ')})`)
+        Object.assign(error, { code: 'undo-unavailable', reason: 'snapshot-pruned', paths: pruned })
+        throw error
       }
       if (stale.length > 0) {
         const error = new Error(`refusing to undo: changed after the rewind: ${stale.join(', ')}`)
@@ -3182,6 +3288,14 @@ export class SnapshotStore {
       const journal = journalFromJson(parsed as unknown as Record<string, unknown>, sessionDir)
       if (journal === undefined) continue
       if (journal.state === 'rolled-back') continue
+      // A completed journal whose actions all carry a content fingerprint can
+      // be judged by hashing the disk, so its `before` sidecars may be pruned.
+      // Only legacy journals still need their groups pinned.
+      if (journal.state === 'completed') {
+        const needsRefs = journal.actions.some(action =>
+          action.failed === undefined && action.beforeSha256 === undefined)
+        if (!needsRefs) continue
+      }
       for (const action of journal.actions) {
         const source = action.before
         if (source === null || source.kind !== 'blob') continue
@@ -3692,6 +3806,10 @@ export class SnapshotStore {
       ? storeVersion
       : undefined
     if (!dryRun) {
+      // Remember how far the removed snapshots reached before the dir is gone.
+      // The tombstone is what lets a later preview say "files unavailable"
+      // instead of rendering an empty diff for a session that was cleared.
+      const clearedThrough = await this.anchorSeqs(sessionId).then((seqs) => seqs[seqs.length - 1] ?? 0).catch(() => 0)
       // Any store member means the dir is worth removing: entries, journals,
       // and the byte-only members `sessionStats` counts (a staged capture, a
       // rescue copy, a marker). `bytes > 0` covers the latter, so a dir that
@@ -3700,6 +3818,7 @@ export class SnapshotStore {
       if (stats.anchorGroups > 0 || stats.journals > 0 || stats.bytes > 0) {
         await rm(this.sessionDir(sessionId), { recursive: true, force: true })
       }
+      if (clearedThrough > 0) await this.writeClearedTombstone(sessionId, clearedThrough)
       // Always reset the in-memory dedup state on an apply — even when the dir
       // was already empty. A stale in-memory entry (e.g. a session whose dir was
       // removed out-of-band) would otherwise link a later recordEntry to a
@@ -3790,8 +3909,41 @@ export class SnapshotStore {
       const parsed = Number(raw.trim())
       return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0
     } catch {
+      // A cleared session has no directory, so the horizon it reached is the
+      // tombstone written by `clearSession`. Without it a cleared session looks
+      // exactly like a target that needs no file changes.
+      return this.readClearedTombstone(sessionId)
+    }
+  }
+
+  /** Path of the root-level tombstone for a cleared session. */
+  private clearedTombstonePath(sessionId: string): string {
+    return join(this.root, CLEARED_DIR, safeSessionId(sessionId))
+  }
+
+  /** Highest anchor a clear removed; `0` when the session was never cleared. */
+  private async readClearedTombstone(sessionId: string): Promise<number> {
+    try {
+      const raw = await readFile(this.clearedTombstonePath(sessionId), 'utf8')
+      const parsed = Number(raw.trim())
+      return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0
+    } catch {
       return 0
     }
+  }
+
+  /**
+   * Record how far a cleared session's snapshots reached. The tombstone is
+   * tiny, survives the directory removal, and is dropped again as soon as the
+   * session records a new snapshot.
+   */
+  private async writeClearedTombstone(sessionId: string, seq: number): Promise<void> {
+    const dir = join(this.root, CLEARED_DIR)
+    await mkdir(dir, { recursive: true })
+    const file = this.clearedTombstonePath(sessionId)
+    const tmp = `${file}.tmp`
+    await writeFile(tmp, String(seq), 'utf8')
+    await rename(tmp, file)
   }
 
   /** Advance the eviction watermark; never moves it backwards. */

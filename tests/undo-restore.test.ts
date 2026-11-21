@@ -74,6 +74,25 @@ describe('undoRestore', () => {
     expect(await readFile(file, 'utf8')).toBe('v2')
   })
 
+  it('survives a budget prune of the sidecars it no longer needs', async () => {
+    const file = await touch('d.txt', 'v0')
+    await store.recordEntry(session, { callId: 'c1', anchorSeq: 5, path: file, before: 'v0' })
+    await writeFile(file, 'v1', 'utf8')
+    await store.restoreAfter(session, 5, unlink, undefined, { opId: 'op-test-prune' })
+
+    // A later checkpoint installs a newer group; keep=1 then evicts the group
+    // holding this rewind's `before` sidecar. The journal stays (undo record)
+    // and the fingerprint makes the eviction harmless.
+    const other = await touch('other.txt', 'x')
+    await store.recordEntry(session, { callId: 'c2', anchorSeq: 6, path: other, before: 'x' })
+    await store.prune(session, 1)
+    await expect(readdir(join(store.sessionDir(session), '5'))).rejects.toThrow()
+
+    const undone = await store.undoRestore(session, 'op-test-prune', unlink)
+    expect(undone.failed).toEqual([])
+    expect(await readFile(file, 'utf8')).toBe('v1')
+  })
+
   it('re-creates a file the rewind had deleted', async () => {
     const file = await touch('c.txt', 'created-later')
     // The capture says the file did NOT exist at the anchor, so the rewind

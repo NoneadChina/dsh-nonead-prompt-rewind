@@ -680,7 +680,11 @@ workspaceKeyFromRegistry(sessionId, workspaces)
 
 撤销**只还原文件**：对话保持已回退状态（`foldSurface` 已把节点移出 surface，没有反操作可调）。成功后 `patch` 条目写入 `undoneAt` / `undoOutcome` / `undoMode: 'files'`。
 
-completed journal 就是这份撤销记录：`prune` 只回收 `rolled-back` 的记录，最新的 completed 连同撤销 stale 检查要读的 `before` 组一起 pin 住；下一次回退在写自己的 journal 之前先退休旧记录，所以每会话最多一份。撤销中途失败（`recovery-required`）或进程在 rollback 中退出（`rollback-running`）都**可以重试**：`undoRestore` 识别这两种状态后直接从 rescue 续跑，不要求重来。
+completed journal 就是这份撤销记录：`prune` 只回收 `rolled-back` 的记录，最新的 completed 保留，下一次回退在写自己的 journal 之前先退休旧记录，所以每会话最多一份。撤销中途失败（`recovery-required`）或进程在 rollback 中退出（`rollback-running`）都**可以重试**：`undoRestore` 识别这两种状态后直接从 rescue 续跑，不要求重来。
+
+撤销的 stale 检查按 journal 里记录的逻辑字节 SHA-256（`beforeSha256` / `beforeSize`，codec 解码后）对磁盘当前内容做哈希，因此 `before` 组被预算逐出也不影响撤销；没有指纹的旧 journal 退回 ref 判定，ref 缺失时报 `undo-unavailable`（reason `snapshot-pruned`），绝不误报 `stale-undo`。
+
+“不活跃窗口内 100%”由三层约束共同保证：年龄清扫只在会话最后一次活动早于 `maxAgeDays` 时删除整目录；整库预算跳过窗口内的会话、正在驱动的会话，以及仍持有 completed undo 记录的会话；单会话预算只逐出早于 `retentionDays` 的锚点组（预算可以暂时超标，由地平线与采集策略兜底）。显式清空会话会写根级 `.cleared/<sessionId>` 墓碑，预览据此报 `filesUnavailable`、撤销报 `undo-unavailable`，而不是把“已清空”显示成“无需改动”。
 
 "stale 拒绝"是本功能的安全核心：回退后又手改过其中某个文件，整批撤销被拒绝，而不是覆盖用户的改动。撤销记录已不可用（journal 缺失、快照被清、或已撤过）时给出具体原因，不要退化成泛化的 `undo-failed`。
 
