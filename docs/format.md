@@ -87,7 +87,8 @@ interface CheckpointEntryJson {
   file: string        // resolved display path (absolute) of the tracked file
   parent?: string     // realpath of dirname(file) at commit time (the location pin)
   blob: string | null // sidecar file name; null = the file did not exist (a creation)
-  size: number        // byte length of the sidecar (0 when blob is null)
+  codec?: 'br'        // sidecar is brotli-packed; absent = raw bytes
+  size: number        // logical byte length of the before content (0 when blob is null)
   mode?: number       // permission bits recorded at capture time (best effort)
   lossy?: true        // recorded from legacy content that had already lost bytes
   time: number        // epoch ms; strictly increasing within one store instance
@@ -97,7 +98,12 @@ Semantics a reader may rely on:
 
 - **`blob` is the pre-edit state.** A string names the sidecar holding the exact before bytes, copied raw (never decoded into a JS string), so binary
   and non-UTF-8 files round-trip byte-exactly. The name is an invariant: it must equal this entry's own file name with `.json` replaced by `.before`.
-  A sidecar that is missing, not a regular file, or a different size than `size` is an integrity failure — never a silent "the file was created".
+  A sidecar that is missing or not a regular file is an integrity failure — never a silent "the file was created". For a raw sidecar the file size
+  must equal `size`; for a packed sidecar (`codec: 'br'`) the decoded length must equal `size`, and a decode failure is that same integrity failure.
+- **`codec` is optional and additive.** When a text sidecar of at least 1 KiB compresses by more than a small margin, it is brotli-packed and the
+  entry records `codec: 'br'`; `size` stays the logical before length, so budgets still account the real on-disk `storedSize` while restores and
+  previews use `size`. A reader that does not know a codec must treat the entry as unreadable (fail closed) rather than hand packed bytes to a
+  restore; a `lossy` record never carries a codec.
 - **Size cap.** A regular file larger than `DEFAULT_MAX_FILE_BYTES` (8 MiB) is not backed up;
   the cap is exposed as `maxFileBytes`, where `0` disables it. The capture is skipped entirely
   — never recorded as a creation, which a rewind would turn into a delete. The automatic
@@ -134,7 +140,9 @@ Semantics a reader may rely on:
 ## 6. Object pool and garbage collection
 Store version 3 adds the root-level `objects/` pool. It is not part of any entry: writing a
 sidecar also links it to `objects/<sha256>` (temporarily `objects/<sha256>.cas` if the link has
-to be replaced), and readers never look there. Hard links are best-effort — a filesystem that
+to be replaced), and readers never look there. The hash is over the stored bytes, so a packed
+text sidecar and its raw form are different objects; `codec` lives only in the entry. Hard links
+are best-effort — a filesystem that
 refuses them (FAT, some permission setups) simply keeps the per-entry copy, which is why the
 pool is an optimization, not a correctness requirement.
 
@@ -316,7 +324,8 @@ The format is versioned at three levels, and compatibility means *reading old da
 repairing it:
 
 - A session-level `store` marker and a self-describing `store` field on every entry. A missing marker (or `1`) is the legacy string format, which is
-  still read but never migrated; entries carrying `2` are read unchanged (the object pool is not part of an entry). A value **above** the current
+  still read but never migrated; entries carrying `2` are read unchanged (the object pool is not part of an entry), and `3` entries are read including
+  the optional `codec` (a v3 record without one is just a raw sidecar). A value **above** the current
   `CURRENT_STORE_VERSION` (`3`) fails the automatic operations closed: no file restore, no new entry, and no age sweep into a store a newer build owns.
   The conversation rewind does not depend on snapshots and keeps working.
 - **The explicit clear is the one deliberate exception.** `/snapshot-auto-cleanup run --current --apply` is the user's escape hatch for reclaiming

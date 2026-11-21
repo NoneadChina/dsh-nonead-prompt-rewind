@@ -41,6 +41,7 @@ import { createHash } from 'node:crypto'
 import type { Stats } from 'node:fs'
 import { chmod, copyFile, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import {
   DEFAULT_MAX_SESSION_BYTES,
@@ -163,8 +164,10 @@ export class UnknownStoreVersionError extends Error {
  *   bytes are unknowable, so it can be compared against the disk but must
  *   never be written back as a restore target (that would destroy live data).
  */
+export type SidecarCodec = 'br'
+
 export type ByteSource =
-  | { readonly kind: 'blob'; readonly path: string }
+  | { readonly kind: 'blob'; readonly path: string; readonly codec?: SidecarCodec }
   | { readonly kind: 'text'; readonly bytes: Buffer }
   | { readonly kind: 'lossyText'; readonly text: string }
 
@@ -173,6 +176,20 @@ function textSourceOf(text: string): ByteSource {
   return text.includes(REPLACEMENT_CHAR)
     ? { kind: 'lossyText', text }
     : { kind: 'text', bytes: Buffer.from(text, 'utf8') }
+}
+
+/**
+ * Read a recorded byte source back as plain bytes, undoing the sidecar codec.
+ * Callers that WRITE these bytes into the workspace must go through this —
+ * copying a packed sidecar verbatim would restore compressed data.
+ */
+async function sourceBytes(source: ByteSource): Promise<Buffer> {
+  if (source.kind === 'blob') {
+    const raw = await readFile(source.path)
+    return source.codec === 'br' ? brotliDecompressSync(raw) : raw
+  }
+  if (source.kind === 'text') return source.bytes
+  throw new Error('a lossy legacy source has no faithful byte form')
 }
 
 /** A staged raw byte copy waiting to be committed (`recordBackup`). */
@@ -516,6 +533,7 @@ export const defaultProbe: DiskProbe = {
         await stat(path)
         return false
       }
+      if (source.kind === 'blob' && source.codec !== undefined) return await sameFileBuffer(path, await sourceBytes(source))
       if (source.kind === 'blob') return await sameFileBytes(path, source.path)
       if (source.kind === 'text') return await sameFileBuffer(path, source.bytes)
       // Legacy lossy string: compare with the same decode the v1 build used.
@@ -640,7 +658,12 @@ function refToSource(raw: unknown, sessionDir: string): ByteSource | null | unde
   const ref = raw as Record<string, unknown>
   if (typeof ref.blob === 'string') {
     if (!isSafeBackupRef(ref.blob)) return undefined
-    return { kind: 'blob', path: join(sessionDir, ref.blob) }
+    if (ref.codec !== undefined && ref.codec !== 'br') return undefined
+    return {
+      kind: 'blob',
+      path: join(sessionDir, ref.blob),
+      ...(ref.codec === 'br' ? { codec: 'br' as const } : {}),
+    }
   }
   if (typeof ref.text === 'string') return textSourceOf(ref.text)
   return undefined
@@ -658,7 +681,7 @@ function sourceToRef(source: ByteSource | null, sessionDir: string, entryPath: s
     // rolled back or undone. Refs are portable; `join` reads them back.
     const blob = relative(sessionDir, source.path).split(sep).join('/')
     if (!isSafeBackupRef(blob)) throw new Error(`unsafe backup ref ${blob} for ${entryPath}`)
-    return { blob }
+    return { blob, ...(source.codec !== undefined ? { codec: source.codec } : {}) }
   }
   return { text: source.kind === 'text' ? source.bytes.toString('utf8') : source.text }
 }
@@ -780,7 +803,12 @@ function entryToJson(entry: CheckpointEntry): Record<string, unknown> {
   }
   if (entry.before === null) return { ...base, blob: null, size: 0 }
   if (entry.before.kind !== 'blob') throw new Error(`entry for ${entry.path} is not blob-backed`)
-  return { ...base, blob: basename(entry.before.path), size: entry.size }
+  return {
+    ...base,
+    blob: basename(entry.before.path),
+    size: entry.size,
+    ...(entry.before.codec !== undefined ? { codec: entry.before.codec } : {}),
+  }
 }
 
 /** Serialize one in-memory dedup link for disk (the current byte format). */
@@ -842,9 +870,16 @@ async function readEntry(file: string, anchorSeq: number): Promise<StoredEntry |
     if (typeof parsed.blob !== 'string') return undefined
     // Invariant: the sidecar sits next to its entry, named after it.
     if (parsed.blob !== sidecarName(basename(file))) return undefined
+    // Unknown codecs must fail closed: treating packed bytes as raw would write
+    // compressed data into the workspace.
+    if (parsed.codec !== undefined && parsed.codec !== 'br') return undefined
+    const codec: SidecarCodec | undefined = parsed.codec === 'br' ? 'br' : undefined
     const size = typeof parsed.size === 'number' && parsed.size >= 0 ? parsed.size : 0
     const mode = typeof parsed.mode === 'number' ? parsed.mode : undefined
     if (parsed.lossy === true) {
+      // A packed sidecar contradicts the lossy flag: the lossy form is always
+      // written raw so it can be read back as the replacement-character string.
+      if (codec !== undefined) return undefined
       // The sidecar holds the UTF-8 re-encoding of a LOSSY v1 string: read it
       // back as that string so the planner can compare it but never write it.
       // An unreadable sidecar makes the entry unusable — skipped, never a
@@ -858,7 +893,7 @@ async function readEntry(file: string, anchorSeq: number): Promise<StoredEntry |
     }
     return {
       ...base,
-      before: { kind: 'blob', path: join(dirname(file), parsed.blob) },
+      before: { kind: 'blob', path: join(dirname(file), parsed.blob), ...(codec !== undefined ? { codec } : {}) },
       size,
       ...(mode !== undefined ? { mode } : {}),
     }
@@ -1691,6 +1726,20 @@ export class SnapshotStore {
       throw error
     })
     if (!st.isFile()) throw new Error(`backup sidecar is not a file: ${source.path}`)
+    if (source.codec !== undefined) {
+      // A packed sidecar is smaller than the logical size by design; verify it
+      // by decoding instead, so corruption still fails loudly.
+      let bytes: Buffer
+      try {
+        bytes = brotliDecompressSync(await readFile(source.path))
+      } catch (error) {
+        throw new Error(`backup sidecar cannot be decoded: ${source.path} (${String(error)})`)
+      }
+      if (bytes.length !== entry.size) {
+        throw new Error(`backup sidecar size mismatch for ${entry.path} (recorded ${entry.size}, decoded ${bytes.length})`)
+      }
+      return source
+    }
     if (st.size !== entry.size) {
       throw new Error(`backup sidecar size mismatch for ${entry.path} (recorded ${entry.size}, found ${st.size})`)
     }
@@ -1707,6 +1756,10 @@ export class SnapshotStore {
   private async sourcesMatch(a: ByteSource | null, b: ByteSource | null): Promise<boolean> {
     if (a === null || b === null) return a === null && b === null
     try {
+      if ((a.kind === 'blob' && a.codec !== undefined) || (b.kind === 'blob' && b.codec !== undefined)) {
+        if (a.kind === 'lossyText' || b.kind === 'lossyText') return false
+        return (await sourceBytes(a)).equals(await sourceBytes(b))
+      }
       if (a.kind === 'blob' && b.kind === 'blob') return await sameFileBytes(a.path, b.path)
       if (a.kind === 'text' && b.kind === 'text') return a.bytes.equals(b.bytes)
       if (a.kind === 'blob' && b.kind === 'text') return await sameFileBuffer(a.path, b.bytes)
@@ -1730,24 +1783,58 @@ export class SnapshotStore {
   }
 
   /**
+   * Pack a text sidecar in place with brotli when that actually saves space.
+   * Binary sidecars stay raw: they are already at or below the capture policy's
+   * size caps, and compression would only add decode work to every restore.
+   * A packed sidecar is still a complete file, so the rename is atomic.
+   */
+  private async packSidecar(dest: string, logicalSize: number): Promise<{ readonly codec?: SidecarCodec; readonly storedSize: number }> {
+    if (logicalSize < 1024 || await this.binaryProbe(dest)) return { storedSize: logicalSize }
+    const raw = await readFile(dest)
+    const packed = brotliCompressSync(raw, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } })
+    // Keep the raw bytes unless the win is worth the decode: tiny gains add
+    // codec risk (and a version dependency) for no meaningful space saving.
+    if (packed.length + 16 >= raw.length) return { storedSize: raw.length }
+    const tmp = `${dest}.tmp`
+    await writeFile(tmp, packed)
+    await rename(tmp, dest)
+    return { codec: 'br', storedSize: packed.length }
+  }
+
+  /**
    * Place one entry's sidecar next to its entry file: MOVE a staged capture
    * (same filesystem, atomic) or write the bytes from a source. Returns the
-   * blob source and its size, or null for a created file. The sidecar is
-   * always complete before the entry JSON is written.
+   * blob source plus its logical and stored sizes, or null for a created file.
+   * The sidecar is always complete before the entry JSON is written.
    */
   private async placeSidecar(
     entryFile: string,
     content: { readonly source: ByteSource | null; readonly staged?: { readonly file: string } },
-  ): Promise<{ readonly source: ByteSource; readonly size: number } | null> {
+  ): Promise<{ readonly source: ByteSource; readonly size: number; readonly storedSize: number } | null> {
     if (content.source === null) return null
     const dest = join(dirname(entryFile), sidecarName(basename(entryFile)))
     if (content.staged !== undefined) await rename(content.staged.file, dest)
     else await this.writeSidecar(dest, content.source)
+    let logicalSize = (await stat(dest)).size
+    let codec: SidecarCodec | undefined
+    if (content.source.kind === 'blob' && content.source.codec !== undefined) {
+      // Already packed (a rescue copy or a re-commit): keep the codec and take
+      // the logical size from the decoded bytes, never from the stored file.
+      codec = content.source.codec
+      logicalSize = (await sourceBytes(content.source)).length
+    } else {
+      const packed = await this.packSidecar(dest, logicalSize)
+      codec = packed.codec
+    }
     // Publish the bytes into the global pool before the entry JSON names them:
     // the sidecar is complete either way, and dedup is best-effort.
     await this.linkIntoCAS(dest)
-    const st = await stat(dest)
-    return { source: { kind: 'blob', path: dest }, size: st.size }
+    const storedSize = (await stat(dest)).size
+    return {
+      source: { kind: 'blob', path: dest, ...(codec !== undefined ? { codec } : {}) },
+      size: logicalSize,
+      storedSize,
+    }
   }
 
   /**
@@ -1811,7 +1898,7 @@ export class SnapshotStore {
       this.lastEntry.set(key, { source: prior.source, ref: selfRef })
     } else {
       const placed = await this.placeSidecar(file, content)
-      storedBytes = placed?.size ?? 0
+      storedBytes = placed?.storedSize ?? 0
       const committed: CheckpointEntry = {
         callId: entry.callId,
         anchorSeq: entry.anchorSeq,
@@ -2492,7 +2579,8 @@ export class SnapshotStore {
       widened = true
     }
     try {
-      if (content.kind === 'blob') await copyFile(content.path, path)
+      if (content.kind === 'blob' && content.codec !== undefined) await writeFile(path, await sourceBytes(content))
+      else if (content.kind === 'blob') await copyFile(content.path, path)
       else if (content.kind === 'text') await writeFile(path, content.bytes)
       else await writeFile(path, Buffer.from(content.text, 'utf8'))
     } catch (error) {

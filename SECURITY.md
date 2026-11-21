@@ -108,7 +108,10 @@ hides the `[target, marker]` span from the rendered transcript.
   bytes share one inode across sessions. The pool holds no data the session
   directories do not already hold, entry reads never depend on it, and garbage
   collection removes only objects with no remaining sidecar link (`nlink <= 1`).
-  `/snapshot-auto-cleanup migrate|gc` default to a dry run.
+  `/snapshot-auto-cleanup migrate|gc` default to a dry run. Text sidecars may be
+  brotli-packed (`codec: 'br'`): readers decode before restoring, require the
+  decoded length to match `size`, and treat an unknown codec or a failed decode
+  as an integrity failure (never as "the file was created").
 - **Path sanitization**: session ids and call ids are scrubbed to
   `[a-zA-Z0-9._-]` (`safeSessionId` / `safeFileId`) before joining the store
   root; `.` and `..` bare values are replaced — hostile ids cannot traverse

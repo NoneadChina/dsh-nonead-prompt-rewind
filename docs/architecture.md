@@ -161,7 +161,9 @@ over the per-file cap (default 8 MiB; `maxFileBytes: 0` disables it) is never ba
 automatic first-sight scan uses a lower 1 MiB cap; content-identical before-states become dedup
 links instead of second copies, and every committed sidecar is hard-linked into a store-wide
 `objects/<sha256>` pool so byte-identical captures across sessions share one inode (orphans are
-mark-and-sweep collected; `migrate` retrofits the pool, dry-run by default); `prune` keeps the
+mark-and-sweep collected; `migrate` retrofits the pool, dry-run by default), and a text sidecar
+that brotli actually shrinks is packed behind an entry-level `codec: 'br'` (the pool then stores
+the packed bytes); `prune` keeps the
 newest 100 anchor groups per session and
 materializes a surviving link pointing into a group being dropped. A retention horizon
 (`retentionDays`, default 7) additionally evicts groups older than it even below the count cap,

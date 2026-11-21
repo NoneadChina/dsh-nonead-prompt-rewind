@@ -100,7 +100,9 @@ describe('byte budgets', () => {
   })
 
   it('the whole-store budget evicts idle sessions but never an active one', async () => {
-    const store = new SnapshotStore(join(root, 'snap'), { maxSessionBytes: 0, maxTotalBytes: 2_000 })
+    // The budget is deliberately below one session's entry metadata: whether
+    // the text sidecar packs or not, the two sessions together overflow it.
+    const store = new SnapshotStore(join(root, 'snap'), { maxSessionBytes: 0, maxTotalBytes: 100 })
     const a = await touch('a.txt', 'a')
     const b = await touch('b.txt', 'b')
     await store.recordEntry('active', {

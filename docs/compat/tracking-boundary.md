@@ -131,9 +131,10 @@ forms: `null` means the file **did not exist** (a restore deletes it), otherwise
 byte copy. Together these backups are the session's **snapshot**, grouped by message.
 
 Within one message's turn, every write-class call leaves a backup of its own; a restore takes
-the **earliest** of them, which is exactly the state the message began with. Backups are raw
-byte sidecars (`copyFile`), never decoded strings, so binary and non-UTF-8 files round-trip
-byte-exactly. Permission bits are recorded alongside, applied only when the content is
+the **earliest** of them, which is exactly the state the message began with. Backups are byte
+sidecars (`copyFile`), never decoded strings, so binary and non-UTF-8 files round-trip
+byte-exactly; a text sidecar may be stored brotli-packed behind `codec: 'br'` and is decoded on
+read, so the restored bytes are still the original bytes. Permission bits are recorded alongside, applied only when the content is
 restored, and never decide whether a restore happens; identical consecutive content is stored
 as an in-place dedup link instead of a second copy.
 
