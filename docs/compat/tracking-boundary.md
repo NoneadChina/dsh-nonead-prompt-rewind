@@ -77,10 +77,12 @@ is currently over the cap, **no** rewind touches it.
 ### 2.3 Files the capture policy excludes
 
 Temporary/render directories (`.dsh-tmp`, `.dsh`, browser profiles, `renders`, `temp`, …),
-media/binary extensions (PNG, video, archives, databases, model weights, …), and — unless
-`snapshotBinaries` is on — files whose first 8 KiB contain a NUL byte are never staged. The
-refusal is remembered for the session, so a rewind preview reports the path as **not covered**
-instead of implying a complete restore. `snapshotIncludeGlobs` can force a path back in;
+agent bookkeeping (`.dsh-project-memory`), media/binary extensions (PNG, video, archives,
+databases, model weights, …), and — unless `snapshotBinaries` is on — files whose first 8 KiB
+contain a NUL byte are never staged. Undo also refuses to roll back any path in those managed
+directories: they change on their own while the session runs, so restoring an old copy would
+destroy newer records. The refusal is remembered for the session, so a rewind preview reports
+the path as **not covered** instead of implying a complete restore. `snapshotIncludeGlobs` can force a path back in;
 `snapshotExcludeGlobs` adds more refusals. Byte budgets (256 MiB per session / 2 GiB per store by
 default) may additionally evict old anchor groups, which narrows how far back a file restore can
 reach without changing the conversation rewind itself. A retention horizon (`retentionDays`,

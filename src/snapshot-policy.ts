@@ -72,6 +72,10 @@ export const DEFAULT_EXCLUDED_DIRS: readonly string[] = [
   // Harness scratch and browser profiles.
   '.dsh-tmp',
   '.dsh',
+  // Agent-authored bookkeeping (project memory, task lists, audit trails).
+  // These change on almost every turn, so restoring them makes an otherwise
+  // valid undo look "stale" the moment the session continues.
+  '.dsh-project-memory',
   '.plugin-fetch',
   '.pnpm-store',
   '.yarn',
@@ -87,6 +91,21 @@ export const DEFAULT_EXCLUDED_DIRS: readonly string[] = [
   'temp',
   'tmp',
 ]
+
+/**
+ * Path segments that hold the agent's own bookkeeping rather than user files.
+ * They are excluded from capture, and undo also refuses to roll them back: a
+ * journal written before this rule existed may still name them, and restoring
+ * an audit log or task database would destroy the newer records that made the
+ * file look "changed" in the first place.
+ */
+export const MANAGED_STATE_DIRS: readonly string[] = ['.dsh', '.dsh-tmp', '.dsh-project-memory']
+
+/** True when any path segment is managed agent state (case-insensitive). */
+export function isManagedStatePath(file: string): boolean {
+  return file.split(/[\\/]+/).some(segment => MANAGED_STATE_DIRS.includes(segment.toLowerCase()))
+}
+
 
 /**
  * Extensions that are binary or media by definition: never worth a byte-level

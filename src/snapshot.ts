@@ -49,6 +49,7 @@ import {
   DEFAULT_SCAN_MAX_FILE_BYTES,
   decideSnapshotPath,
   isBinaryFile,
+  isManagedStatePath,
   type SnapshotPathDecision,
   type SnapshotPolicyOptions,
   type SnapshotSkipReason,
@@ -2833,6 +2834,12 @@ export class SnapshotStore {
         allReached = false
         continue
       }
+      if (isManagedStatePath(action.path)) {
+        // Agent bookkeeping moves on its own; it is never part of the user's
+        // restore, so it cannot block reconciliation.
+        restored.push(action.path)
+        continue
+      }
       let reached: boolean
       try {
         const goal = rollbackPhase ? action.rescue : action.action === 'delete' ? null : action.before
@@ -2893,6 +2900,12 @@ export class SnapshotStore {
     const failed: { path: string; message: string }[] = []
     for (let i = 0; i < journal.actions.length; i++) {
       const action = journal.actions[i]!
+      if (isManagedStatePath(action.path)) {
+        // Legacy journals may name harness bookkeeping; never write it back.
+        action.done = true
+        await this.saveJournal(journal)
+        continue
+      }
       opts?.crash?.('before-action', i) // test-only: crash before the fs op
       let reached: boolean
       try {
@@ -3044,6 +3057,12 @@ export class SnapshotStore {
       for (const action of journal.actions) {
         // A failed action never applied, so its path is not ours to judge.
         if (action.failed !== undefined) continue
+        if (isManagedStatePath(action.path)) {
+          // Harness bookkeeping (memory logs, task databases) changes while the
+          // session keeps running. It is never restored, so it cannot make a
+          // legitimate undo look like the user edited a file.
+          continue
+        }
         if (action.beforeSha256 !== undefined && action.beforeSize !== undefined) {
           // Hash-based judgement: independent of whether the `before` sidecar
           // survived a budget prune.
@@ -3096,6 +3115,13 @@ export class SnapshotStore {
     let rollbackFailed = false
     for (let i = 0; i < journal.actions.length; i++) {
       const action = journal.actions[i]!
+      if (isManagedStatePath(action.path)) {
+        // Agent bookkeeping (task lists, audit logs) has moved on since the
+        // rewind; restoring its old copy would destroy newer records.
+        action.done = false
+        await this.saveJournal(journal)
+        continue
+      }
       if (action.rescueError !== undefined) {
         // The pre-restore state was never captured: this path cannot be
         // undone — report it and leave it untouched (recovery-required).

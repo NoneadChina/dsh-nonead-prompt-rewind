@@ -10,7 +10,7 @@
  */
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SnapshotStore } from '../src/snapshot.ts'
 
@@ -31,10 +31,10 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-/** Write one workspace file (creating `ws/` on first use). */
+/** Write one workspace file (creating parent directories on first use). */
 async function touch(name: string, content: string): Promise<string> {
   const abs = join(root, 'ws', name)
-  await mkdir(join(root, 'ws'), { recursive: true })
+  await mkdir(dirname(abs), { recursive: true })
   await writeFile(abs, content, 'utf8')
   return abs
 }
@@ -72,6 +72,28 @@ describe('undoRestore', () => {
       code: 'stale-undo',
     })
     expect(await readFile(file, 'utf8')).toBe('v2')
+  })
+
+  it('leaves harness bookkeeping that moved on its own after the rewind alone', async () => {
+    const file = await touch('e.txt', 'v0')
+    const ledger = await touch('.dsh-project-memory/tasks.json', '{"n":1}')
+    await store.recordEntry(session, { callId: 'c1', anchorSeq: 5, path: file, before: 'v0' })
+    await store.recordEntry(session, { callId: 'c2', anchorSeq: 5, path: ledger, before: '{"n":1}' })
+    await writeFile(file, 'v1', 'utf8')
+    await writeFile(ledger, '{"n":2}', 'utf8')
+
+    await store.restoreAfter(session, 5, unlink, undefined, { opId: 'op-managed' })
+    expect(await readFile(file, 'utf8')).toBe('v0')
+    expect(await readFile(ledger, 'utf8')).toBe('{"n":1}')
+
+    // The memory plugin keeps appending its own state while the session runs.
+    await writeFile(ledger, '{"n":3}', 'utf8')
+
+    const undone = await store.undoRestore(session, 'op-managed', unlink)
+    expect(undone.failed).toEqual([])
+    // The user file is rolled back; the newer bookkeeping is not.
+    expect(await readFile(file, 'utf8')).toBe('v1')
+    expect(await readFile(ledger, 'utf8')).toBe('{"n":3}')
   })
 
   it('survives a budget prune of the sidecars it no longer needs', async () => {

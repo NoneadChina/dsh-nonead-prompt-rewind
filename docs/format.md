@@ -112,7 +112,10 @@ Semantics a reader may rely on:
   media/binary extensions, and (unless `snapshotBinaries` is on) files whose first 8 KiB contain a
   NUL byte; `snapshotIncludeGlobs` overrides extension and sniff refusals, `snapshotExcludeGlobs`
   adds refusals. A refused path is remembered per session so `uncovered` names it; nothing about
-  the on-disk format changes.
+  the on-disk format changes. Harness bookkeeping (`.dsh`, `.dsh-tmp`, `.dsh-project-memory`) is
+  never captured, and undo additionally leaves any legacy journal action on those paths untouched:
+  they change on their own while the session runs, so restoring an old copy would both destroy newer
+  records and make a legitimate undo look like a user edit.
 - **Byte budgets.** `maxSessionBytes` (default 256 MiB) evicts the oldest whole anchor groups as
   soon as a commit crosses it, and `maxTotalBytes` (default 2 GiB) evicts the least-recently-active
   session directories (never one currently being driven) down to 80%. Eviction is link-aware and
