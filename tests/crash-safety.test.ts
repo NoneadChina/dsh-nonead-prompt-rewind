@@ -518,20 +518,26 @@ describe('reconciliation auto-heal and failure reporting', () => {
     expect(await readFile(live, 'utf8')).toBe('A0')
   })
 
-  it('journal files never disturb entriesAfter/prune; terminal ones are recycled', async () => {
+  it('journal files never disturb entriesAfter/prune; the undo record survives a prune', async () => {
     const a = await touch('a.txt', 'A0')
     for (let seq = 1; seq <= 3; seq++) {
       await store.recordEntry(session, { callId: `c${seq}`, anchorSeq: seq, path: a, before: 'A0' })
     }
     await writeFile(a, 'A1', 'utf8')
     await store.restoreAfter(session, 1, unlink) // writes a completed journal
-    await store.prune(session, 1) // drops anchor groups 1..2
-
-    expect(await store.entriesAfter(session, 1)).toHaveLength(1) // seq 3 kept
+    await store.prune(session, 1)
+    // The completed journal is the UNDO record: prune keeps it, and keeps the
+    // anchor group holding the `before` bytes its stale check reads (group 1).
+    // Group 2 is the only group the cap may drop.
+    expect((await store.entriesAfter(session, 1)).map(entry => entry.anchorSeq).sort()).toEqual([1, 3])
     expect(await store.reconcileRestores(session)).toEqual([])
-    // The completed journal was recycled by the prune pass: journal files
-    // never confuse planning, and the storage cap now bounds them too.
-    expect((await readdir(store.sessionDir(session))).some(n => journalFileName(n))).toBe(false)
+    expect((await readdir(store.sessionDir(session))).some(n => journalFileName(n))).toBe(true)
+
+    // The surviving record is still a working undo.
+    const journal = (await readJournals(store, session))[0]!
+    const undone = await store.undoRestore(session, journal.id, unlink)
+    expect(undone.failed).toEqual([])
+    expect(await readFile(a, 'utf8')).toBe('A1')
 
     // A second restore still works.
     await writeFile(a, 'A2', 'utf8')
@@ -554,27 +560,32 @@ describe('reconciliation auto-heal and failure reporting', () => {
     expect(await store.reconcileRestores(session)).toEqual([])
   })
 
-  it('prune recycles completed journals but keeps crashed (running) ones', async () => {
+  it('prune keeps the undo record and crashed journals, and drops rolled-back ones', async () => {
     const a = await touch('a.txt', 'A0')
     await store.recordEntry(session, { callId: 'ca', anchorSeq: 5, path: a, before: 'A0' })
     await writeFile(a, 'A1', 'utf8')
     // A crashed restore leaves a running journal…
     await expect(store.restoreAfter(session, 5, unlink, undefined, crashAt('before-action', 0))).rejects.toThrow('simulated host crash')
     // …then a normal restore completes a second one (beginRestore keeps the
-    // running journal — only terminal journals are recycled).
+    // running journal — only already-used undo records are retired).
     await store.restoreAfter(session, 5, unlink)
 
     const journalNames = async () => (await readdir(store.sessionDir(session))).filter(n => journalFileName(n))
     expect(await journalNames()).toHaveLength(2)
     await store.prune(session, 1)
-    expect(await journalNames()).toHaveLength(1) // completed recycled, running kept
-    const kept = (await readJournals(store, session))[0]!
-    expect(kept.state).toBe('running')
-    // The surviving crashed op is still reconcilable; since the later normal
-    // restore already reached the same target on disk, reconcile auto-heals
-    // it to 'completed' instead of reporting a false interruption.
-    expect(await store.reconcileRestores(session)).toEqual([])
-    expect((await readJournals(store, session))[0]!.state).toBe('completed')
+    // Both are recovery records now: the completed one is the undo the user can
+    // still invoke, the running one is an op that may need finishing.
+    expect(await journalNames()).toHaveLength(2)
+
+    // Once the undo is spent the journal is terminal and the next prune may
+    // recycle it; the crashed op stays.
+    const completed = (await readJournals(store, session)).find(journal => journal.state === 'completed')!
+    const undone = await store.undoRestore(session, completed.id, unlink)
+    expect(undone.failed).toEqual([])
+    expect(await readFile(a, 'utf8')).toBe('A1')
+    await store.prune(session, 1)
+    expect(await journalNames()).toHaveLength(1)
+    expect((await readJournals(store, session))[0]!.state).toBe('running')
   })
 
   it('corrupt journals are never recycled', async () => {
@@ -598,13 +609,20 @@ describe('reconciliation auto-heal and failure reporting', () => {
     // The doomed real (group 1) is still on disk and c3 (a kept link) still
     // resolves — nothing dangled, the store is fully usable.
     await writeFile(a, 'A1', 'utf8')
-    const beforeRetry = await store.restoreAfter(session, 3, unlink)
+    const beforeRetry = await store.restoreAfter(session, 3, unlink, undefined, { opId: 'op-materialize' })
     expect(beforeRetry.restored).toEqual([a])
     expect(await readFile(a, 'utf8')).toBe('A0')
-    // A clean retry materializes then drops the oldest group; no dangling link.
+
+    // Consume the undo record: a completed journal pins the `before` group its
+    // stale check reads, so the eviction below needs the journal retired first.
+    const undone = await store.undoRestore(session, 'op-materialize', unlink)
+    expect(undone.failed).toEqual([])
+    expect(await readFile(a, 'utf8')).toBe('A1')
+
+    // A clean retry materializes then drops the oldest groups; no dangling link.
     await store.prune(session, 1)
     const after = await store.entriesAfter(session, 1)
-    expect(after).toHaveLength(1)
+    expect(after.map(entry => entry.anchorSeq)).toEqual([3])
     expect('ref' in after[0]!).toBe(false) // materialized to a real snapshot
     await writeFile(a, 'A2', 'utf8')
     const outcome = await store.restoreAfter(session, 1, unlink)

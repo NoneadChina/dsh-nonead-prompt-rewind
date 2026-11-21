@@ -2395,16 +2395,19 @@ export class SnapshotStore {
     probe: DiskProbe,
     callerOpId?: string,
   ): Promise<RestoreJournal> {
-    // Recycle terminal journals from earlier restores before persisting the
-    // new intent: a restore-only session never runs recordEntry's prune
-    // pass, so this is what bounds the journal accumulation there.
+    // A new restore replaces the old undo target: retire the previous
+    // `completed` journal (the only one that may be undoable) and recycle any
+    // finished rollback records before persisting the new intent. This is also
+    // what bounds journal accumulation: at most one completed journal exists.
     const sessionDir = this.sessionDir(sessionId)
     try {
-      await this.pruneTerminalJournals(sessionDir, await readdir(sessionDir))
+      const names = await readdir(sessionDir)
+      await this.retireUndoableJournals(sessionDir, names)
+      await this.pruneTerminalJournals(sessionDir, names)
     } catch (error) {
       if (!isEnoent(error)) throw error
       // Session dir does not exist yet (no entries ever recorded): nothing
-      // to recycle.
+      // to retire or recycle.
     }
     const id = callerOpId ?? `op-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
     const rescueDir = join(sessionDir, RESCUE_DIR, safeFileId(id))
@@ -2817,14 +2820,19 @@ export class SnapshotStore {
   }
 
   /**
-   * Undo one COMPLETED restore — the user-facing "restore to before this
-   * rewind" (docs/DEVELOPMENT-GUIDE.zh.md §6.3).
+   * Undo one restore — the user-facing "restore to before this rewind"
+   * (docs/DEVELOPMENT-GUIDE.zh.md §6.3).
    *
-   * Differences from {@link rollbackRestore}: it accepts a `completed` journal
-   * (crash recovery only ever sees interrupted ones), and it refuses to run at
-   * all when any applied path no longer matches its POST-restore state — a file
-   * the user edited after the rewind must not be silently overwritten. The
-   * refusal carries `code: 'stale-undo'` plus the offending paths.
+   * Differences from {@link rollbackRestore}: it accepts the `completed`
+   * journal a finished rewind leaves behind, and it refuses to run at all when
+   * any applied path no longer matches its POST-restore state — a file the user
+   * edited after the rewind must not be silently overwritten. The refusal
+   * carries `code: 'stale-undo'` plus the offending paths.
+   *
+   * It is also the RETRY entry point: a partial undo leaves the journal in
+   * `recovery-required`, and `rollback-running` may be left by a crash. Both
+   * resume {@link applyRollback} directly — the pass is idempotent, so a retry
+   * finishes the remaining actions instead of being locked out forever.
    *
    * @param sessionId - the session the journal belongs to.
    * @param opId - the restore op to undo.
@@ -2843,27 +2851,44 @@ export class SnapshotStore {
       // Diagnostic detail: which journals this session actually has, so a
       // mismatch between the caller's id and the stored one is visible.
       const present = await readdir(this.sessionDir(sessionId)).catch(() => [] as string[])
-      throw new Error(
+      const error = new Error(
         `restore journal ${opId} not found for session ${sessionId} (present: ${present.filter(name => name.includes('journal')).join(',')})`,
       )
-    }
-    if (journal.state !== 'completed') {
-      throw new Error(`only a completed restore can be undone (journal ${opId} is ${journal.state})`)
-    }
-    const stale: string[] = []
-    for (const action of journal.actions) {
-      // A failed action never applied, so its path is not ours to judge.
-      if (action.failed !== undefined) continue
-      const intact = await probe.matches(action.before, action.path).catch(() => false)
-      if (intact !== true) stale.push(action.path)
-    }
-    if (stale.length > 0) {
-      const error = new Error(`refusing to undo: changed after the rewind: ${stale.join(', ')}`)
-      Object.assign(error, { code: 'stale-undo', stalePaths: stale })
+      Object.assign(error, { code: 'undo-unavailable', reason: 'journal-missing' })
       throw error
     }
-    journal.state = 'rollback-running'
-    await this.saveJournal(journal)
+    if (journal.state === 'rolled-back') {
+      const error = new Error(`this rewind was already undone (journal ${opId} is rolled back)`)
+      Object.assign(error, { code: 'undo-consumed' })
+      throw error
+    }
+    if (journal.state === 'running') {
+      // The forward restore never finished; there is no post-rewind state to
+      // judge, and resuming the REWIND (not the undo) is the correct repair.
+      const error = new Error(`the restore for this rewind did not finish (journal ${opId} is still running)`)
+      Object.assign(error, { code: 'undo-unavailable', reason: 'restore-incomplete' })
+      throw error
+    }
+    if (journal.state === 'completed') {
+      const stale: string[] = []
+      for (const action of journal.actions) {
+        // A failed action never applied, so its path is not ours to judge.
+        if (action.failed !== undefined) continue
+        const intact = await probe.matches(action.before, action.path).catch(() => false)
+        if (intact !== true) stale.push(action.path)
+      }
+      if (stale.length > 0) {
+        const error = new Error(`refusing to undo: changed after the rewind: ${stale.join(', ')}`)
+        Object.assign(error, { code: 'stale-undo', stalePaths: stale })
+        throw error
+      }
+      journal.state = 'rollback-running'
+      await this.saveJournal(journal)
+    } else if (journal.state !== 'rollback-running') {
+      // recovery-required: retry the rollback; the journal stays retryable.
+      journal.state = 'rollback-running'
+      await this.saveJournal(journal)
+    }
     return this.applyRollback(journal, deleteFile, probe)
   }
 
@@ -3134,11 +3159,14 @@ export class SnapshotStore {
   }
 
   /**
-   * Anchor groups a NON-TERMINAL journal still depends on — the groups holding
-   * the sidecars its actions restore from. `prune` must not evict them while
-   * the op can still be finished. Rescue copies live under `rescue/`, never in
-   * an anchor group, so only `before` references matter; a group is pinned only
-   * for a well-formed, safe reference (a corrupt journal pins nothing).
+   * Anchor groups a restore journal still depends on — the groups holding the
+   * sidecars its actions restore from. `prune` must not evict them while the op
+   * can still be finished OR undone: a `completed` journal is the undo record,
+   * and its stale check reads the same `before` bytes back. Rescue copies live
+   * under `rescue/`, never in an anchor group, so only `before` references
+   * matter; a group is pinned only for a well-formed, safe reference (a corrupt
+   * journal pins nothing). A `rolled-back` journal pins nothing: its undo
+   * window is over.
    */
   private async pinnedAnchors(sessionDir: string, names: readonly string[]): Promise<Set<number>> {
     const pinned = new Set<number>()
@@ -3153,7 +3181,7 @@ export class SnapshotStore {
       if (!isRestoreJournal(parsed)) continue
       const journal = journalFromJson(parsed as unknown as Record<string, unknown>, sessionDir)
       if (journal === undefined) continue
-      if (journal.state === 'completed' || journal.state === 'rolled-back') continue
+      if (journal.state === 'rolled-back') continue
       for (const action of journal.actions) {
         const source = action.before
         if (source === null || source.kind !== 'blob') continue
@@ -3170,9 +3198,11 @@ export class SnapshotStore {
   }
 
   /**
-   * Recycle terminal restore journals (`completed` / `rolled-back`): once an
-   * op finished, its journal and its rescue bytes are dead weight that would
-   * otherwise accumulate without bound (one journal per both-mode rewind).
+   * Recycle FINISHED restore journals (`rolled-back`). A `completed` journal is
+   * NOT garbage: it is the undo record the user's "undo this rewind" acts on,
+   * so it lives until a newer restore supersedes it (see
+   * {@link retireUndoableJournals}) or the session is cleared. Keeping exactly
+   * one is what bounds the accumulation — not treating it as terminal waste.
    * Non-terminal journals (crashed ops awaiting reconcile / continue /
    * rollback) and unclassifiable (corrupt) ones are ALWAYS kept — a recovery
    * record that cannot be classified is never destroyed.
@@ -3183,7 +3213,7 @@ export class SnapshotStore {
       const file = join(sessionDir, name)
       try {
         const parsed = JSON.parse(await readFile(file, 'utf8')) as Partial<RestoreJournal>
-        if (parsed.state === 'completed' || parsed.state === 'rolled-back') {
+        if (parsed.state === 'rolled-back') {
           await rm(file, { force: true })
           // A legacy journal has no rescue directory: force:true is a no-op.
           await rm(join(sessionDir, RESCUE_DIR, safeFileId(journalOpIdOf(name))), { recursive: true, force: true })
@@ -3191,6 +3221,31 @@ export class SnapshotStore {
       } catch {
         // Corrupt or unreadable: keep — never destroy a recovery record we
         // cannot classify.
+      }
+    }
+  }
+
+  /**
+   * Retire a still-undoable `completed` journal because a NEW restore is about
+   * to start. Only the newest rewind is undoable (§6.3), so the older journal
+   * and its rescue bytes are genuinely superseded here — this is the one place
+   * where a completed journal may be deleted. The deletion must happen BEFORE
+   * the new journal is written: if it crashed in between, the workspace would
+   * still be at the new target with no journal for either op, which is the
+   * honest "not undoable" state rather than a journal pointing at a target the
+   * rewind has already replaced.
+   */
+  private async retireUndoableJournals(sessionDir: string, names: readonly string[]): Promise<void> {
+    for (const name of names) {
+      if (!isJournalName(name)) continue
+      const file = join(sessionDir, name)
+      try {
+        const parsed = JSON.parse(await readFile(file, 'utf8')) as Partial<RestoreJournal>
+        if (parsed.state !== 'completed') continue
+        await rm(file, { force: true })
+        await rm(join(sessionDir, RESCUE_DIR, safeFileId(journalOpIdOf(name))), { recursive: true, force: true })
+      } catch {
+        // Unreadable: keep it — never delete a record we cannot classify.
       }
     }
   }

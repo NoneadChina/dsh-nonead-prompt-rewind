@@ -62,6 +62,8 @@ const UNDO_ERROR_KEYS: Readonly<Record<string, RewindKey>> = {
   'rewind/stale-undo': 'undoError.stale',
   'rewind/undo-cross-workspace': 'undoError.crossWorkspace',
   'rewind/undo-other-session': 'undoError.wrongSession',
+  'rewind/undo-consumed': 'undoError.consumed',
+  'rewind/undo-unavailable': 'undoError.unavailable',
 }
 
 /** One badge label per forced outcome. */

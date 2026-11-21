@@ -672,14 +672,17 @@ workspaceKeyFromRegistry(sessionId, workspaces)
 | 4 | `entry.workspaceKey === 当前分区` | `undo-cross-workspace` |
 | 5 | `entry.sessionId === 当前会话` | `undo-other-session` |
 | 6 | 未撤销过 | `already-undone` |
-| 7 | `entry.undoable`（journal + rescue 还在） | `not-undoable` |
+| 7 | `entry.undoable`（该会话仍有 completed journal） | `not-undoable` |
 | 8 | 是链尾（`HistoryStore.isChainTail`） | `undo-not-top` |
-| 9 | `undoRestore`：已应用路径仍等于还原后状态 | `stale-undo`（附 `stalePaths`） |
-| 10 | 其它还原异常 | `undo-failed` |
+| 9 | `undoRestore`：未撤销过；journal 存在且不是中间态 | `undo-consumed` / `undo-unavailable` |
+| 10 | 已应用路径仍等于还原后状态 | `stale-undo`（附 `stalePaths`） |
+| 11 | 其它还原异常 | `undo-failed` |
 
-撤销**只还原文件**：对话回不来（`foldSurface` 已把节点移出 surface）。成功后 `patch` 条目写入 `undoneAt` / `undoOutcome` / `undoMode: 'files'`。
+撤销**只还原文件**：对话保持已回退状态（`foldSurface` 已把节点移出 surface，没有反操作可调）。成功后 `patch` 条目写入 `undoneAt` / `undoOutcome` / `undoMode: 'files'`。
 
-"stale 拒绝"是本功能的安全核心：回退后又手改过其中某个文件，整批撤销被拒绝，而不是覆盖用户的改动。
+completed journal 就是这份撤销记录：`prune` 只回收 `rolled-back` 的记录，最新的 completed 连同撤销 stale 检查要读的 `before` 组一起 pin 住；下一次回退在写自己的 journal 之前先退休旧记录，所以每会话最多一份。撤销中途失败（`recovery-required`）或进程在 rollback 中退出（`rollback-running`）都**可以重试**：`undoRestore` 识别这两种状态后直接从 rescue 续跑，不要求重来。
+
+"stale 拒绝"是本功能的安全核心：回退后又手改过其中某个文件，整批撤销被拒绝，而不是覆盖用户的改动。撤销记录已不可用（journal 缺失、快照被清、或已撤过）时给出具体原因，不要退化成泛化的 `undo-failed`。
 
 ### 6.4 能力上报（`caps`）
 

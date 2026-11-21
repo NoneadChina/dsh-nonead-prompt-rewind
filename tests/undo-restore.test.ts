@@ -114,4 +114,93 @@ describe('undoRestore', () => {
     expect(undone.failed).toEqual([])
     expect(await readFile(restorable, 'utf8')).toBe('v1')
   })
+
+  it('keeps the completed journal and its anchor group across a later commit prune', async () => {
+    const file = await touch('keep.txt', 'v0')
+    await store.recordEntry(session, { callId: 'c1', anchorSeq: 5, path: file, before: 'v0' })
+    await writeFile(file, 'v1', 'utf8')
+    await store.restoreAfter(session, 5, unlink, undefined, { opId: 'op-keep' })
+
+    // A later write commits a newer anchor; the prune it runs must reclaim
+    // neither the undo journal nor the `before` group its stale check reads.
+    const other = await touch('other.txt', 'x')
+    await store.recordEntry(session, { callId: 'c2', anchorSeq: 6, path: other, before: 'x' })
+    await store.prune(session, 1)
+
+    const undone = await store.undoRestore(session, 'op-keep', unlink)
+    expect(undone.failed).toEqual([])
+    expect(await readFile(file, 'utf8')).toBe('v1')
+  })
+
+  it('reports a consumed undo instead of a generic failure on the second call', async () => {
+    const file = await touch('once.txt', 'v0')
+    await store.recordEntry(session, { callId: 'c1', anchorSeq: 5, path: file, before: 'v0' })
+    await writeFile(file, 'v1', 'utf8')
+    await store.restoreAfter(session, 5, unlink, undefined, { opId: 'op-once' })
+
+    await store.undoRestore(session, 'op-once', unlink)
+    await expect(store.undoRestore(session, 'op-once', unlink)).rejects.toMatchObject({
+      code: 'undo-consumed',
+    })
+    expect(await readFile(file, 'utf8')).toBe('v1')
+  })
+
+  it('resumes a partially applied undo on the next call', async () => {
+    const created = await touch('later.txt', 'created-later')
+    // The capture says the file did not exist at the anchor: the rewind deletes
+    // it, so the undo must recreate it.
+    await store.recordEntry(session, { callId: 'c1', anchorSeq: 5, path: created, before: null })
+    await store.restoreAfter(session, 5, unlink, undefined, { opId: 'op-retry' })
+
+    // Make the rescue copy unreadable: the undo's write fails mid-op even
+    // though the journal itself is intact. (Deleting the file the journal
+    // needs is a real failure mode — a partially cleaned store directory.)
+    const journalName = (await readdir(store.sessionDir(session))).find(name => name.includes('op-retry'))
+    if (journalName === undefined) throw new Error('expected the retry journal')
+    const journalPath = join(store.sessionDir(session), journalName)
+    const journal = JSON.parse(await readFile(journalPath, 'utf8')) as {
+      state: string
+      actions: { rescue: { blob?: string } | string | null }[]
+    }
+    const rescue = journal.actions[0]!.rescue
+    const rescueRef = typeof rescue === 'string' ? rescue : rescue?.blob
+    if (rescueRef === undefined) throw new Error('expected a rescue copy')
+    const rescuePath = join(store.sessionDir(session), rescueRef)
+    const rescueBytes = await readFile(rescuePath)
+    await rm(rescuePath, { force: true })
+
+    const first = await store.undoRestore(session, 'op-retry', unlink)
+    expect(first.failed).toHaveLength(1)
+    const interrupted = JSON.parse(await readFile(journalPath, 'utf8')) as { state: string }
+    expect(interrupted.state).toBe('recovery-required')
+
+    // The underlying problem is repaired; the next call resumes the rollback.
+    await writeFile(rescuePath, rescueBytes)
+    const second = await store.undoRestore(session, 'op-retry', unlink)
+    expect(second.failed).toEqual([])
+    expect(await readFile(created, 'utf8')).toBe('created-later')
+  })
+
+  it('retires the older undo record when a newer rewind starts', async () => {
+    const first = await touch('first.txt', 'v0')
+    await store.recordEntry(session, { callId: 'c1', anchorSeq: 5, path: first, before: 'v0' })
+    await writeFile(first, 'v1', 'utf8')
+    await store.restoreAfter(session, 5, unlink, undefined, { opId: 'op-old' })
+    expect(await readFile(first, 'utf8')).toBe('v0')
+
+    // A second rewind supersedes the first one's undo record.
+    const second = await touch('second.txt', 'w0')
+    await store.recordEntry(session, { callId: 'c2', anchorSeq: 6, path: second, before: 'w0' })
+    await writeFile(second, 'w1', 'utf8')
+    await store.restoreAfter(session, 6, unlink, undefined, { opId: 'op-new' })
+    expect(await readFile(second, 'utf8')).toBe('w0')
+
+    await expect(store.undoRestore(session, 'op-old', unlink)).rejects.toMatchObject({
+      code: 'undo-unavailable',
+      reason: 'journal-missing',
+    })
+    const undone = await store.undoRestore(session, 'op-new', unlink)
+    expect(undone.failed).toEqual([])
+    expect(await readFile(second, 'utf8')).toBe('w1')
+  })
 })

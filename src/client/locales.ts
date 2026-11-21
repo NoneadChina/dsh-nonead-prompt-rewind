@@ -80,6 +80,8 @@ export const en = {
   'undoError.stale': 'A file changed after this rewind, so it was left untouched',
   'undoError.crossWorkspace': 'That rewind belongs to another workspace',
   'undoError.failed': 'The restore failed',
+  'undoError.consumed': 'A rewind can only be undone once',
+  'undoError.unavailable': 'The undo record for this rewind is no longer available',
 } satisfies Record<string, string>
 
 /** The rewind namespace key union. */
@@ -171,6 +173,8 @@ export const zh: Record<RewindKey, string> = {
   'undoError.stale': '回退之后有文件被改动过，因此没有动它们',
   'undoError.crossWorkspace': '这次回退属于另一个工作区',
   'undoError.failed': '恢复失败',
+  'undoError.consumed': '每次回退只能反悔一次',
+  'undoError.unavailable': '这次回退的撤销记录已不可用',
 }
 
 /** Japanese dictionary, checked complete against the en key set. */
@@ -252,6 +256,8 @@ export const ja: Record<RewindKey, string> = {
   'undoError.stale': '巻き戻し後に変更されたファイルがあるため、そのままにしました',
   'undoError.crossWorkspace': 'その巻き戻しは別のワークスペースのものです',
   'undoError.failed': '復元に失敗しました',
+  'undoError.consumed': '巻き戻しを元に戻せるのは一度だけです',
+  'undoError.unavailable': 'この巻き戻しの取り消し記録はもう利用できません',
 }
 
 /** Spanish dictionary, checked complete against the en key set. */
@@ -334,6 +340,8 @@ export const es: Record<RewindKey, string> = {
   'undoError.stale': 'Un archivo cambió tras el rebobinado, así que no se tocó',
   'undoError.crossWorkspace': 'Ese rebobinado pertenece a otro espacio de trabajo',
   'undoError.failed': 'La restauración falló',
+  'undoError.consumed': 'Un rebobinado solo puede deshacerse una vez',
+  'undoError.unavailable': 'El registro de deshacer de este rebobinado ya no está disponible',
 }
 
 /** French dictionary, checked complete against the en key set. */
@@ -416,6 +424,8 @@ export const fr: Record<RewindKey, string> = {
   'undoError.stale': 'Un fichier a changé après le rembobinage, il n’a donc pas été touché',
   'undoError.crossWorkspace': 'Ce rembobinage appartient à un autre espace de travail',
   'undoError.failed': 'La restauration a échoué',
+  'undoError.consumed': 'Un rembobinage ne peut être annulé qu’une fois',
+  'undoError.unavailable': 'L’enregistrement d’annulation de ce rembobinage n’est plus disponible',
 }
 
 /** German dictionary, checked complete against the en key set. */
@@ -498,6 +508,8 @@ export const de: Record<RewindKey, string> = {
   'undoError.stale': 'Eine Datei wurde nach dem Rückspulen geändert und bleibt daher unberührt',
   'undoError.crossWorkspace': 'Dieses Rückspulen gehört zu einem anderen Arbeitsbereich',
   'undoError.failed': 'Die Wiederherstellung ist fehlgeschlagen',
+  'undoError.consumed': 'Ein Rückspulen lässt sich nur einmal rückgängig machen',
+  'undoError.unavailable': 'Der Rückgängig-Datensatz für dieses Rückspulen ist nicht mehr verfügbar',
 }
 
 /** Russian dictionary, checked complete against the en key set. */
@@ -580,6 +592,8 @@ export const ru: Record<RewindKey, string> = {
   'undoError.stale': 'Файл изменился после отката, поэтому он не тронут',
   'undoError.crossWorkspace': 'Этот откат относится к другой рабочей области',
   'undoError.failed': 'Восстановление не удалось',
+  'undoError.consumed': 'Откат можно отменить только один раз',
+  'undoError.unavailable': 'Запись отмены для этого отката больше недоступна',
 }
 
 /** Brazilian Portuguese dictionary, checked complete against the en key set. */
@@ -662,6 +676,8 @@ export const pt: Record<RewindKey, string> = {
   'undoError.stale': 'Um arquivo mudou após o rebobinamento, então não foi tocado',
   'undoError.crossWorkspace': 'Esse rebobinamento pertence a outro espaço de trabalho',
   'undoError.failed': 'A restauração falhou',
+  'undoError.consumed': 'Um rebobinamento só pode ser desfeito uma vez',
+  'undoError.unavailable': 'O registro de desfazer deste rebobinamento não está mais disponível',
 }
 
 /**

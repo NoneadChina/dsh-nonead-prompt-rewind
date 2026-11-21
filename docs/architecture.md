@@ -186,8 +186,11 @@ intent journal **before** the first filesystem mutation; actions apply one at a 
 failure is recorded and never aborts the pass, and deleting an already-absent file is a no-op.
 A failure-free pass ends `completed`; otherwise the journal stays open — `reconcileRestores`
 reports where an interrupted op stopped, `continueRestore` finishes it, `rollbackRestore`
-returns to the exact pre-restore state, and `undoRestore` is the user-facing "undo this rewind"
-(completed journals only).
+returns to the exact pre-restore state, and `undoRestore` is the user-facing "undo this rewind".
+The newest completed journal is the session's undo record: pruning keeps it (and the `before`
+groups its stale check reads) while recycling `rolled-back` ones, and a later rewind retires it
+before writing its own. An undo interrupted mid-rollback (`recovery-required` /
+`rollback-running`) is retried from the recorded rescue state rather than restarted.
 ## 6. History and the Settings page
 History is an audit trail, never a restore source:
 
@@ -203,11 +206,13 @@ settings page (settings.section id 'rewind') ──RPC history / history.clear /
 - Each partition keeps the newest `historyLimit` entries (default 10), written through a
   per-path serial queue with tmp+rename; a corrupt file is renamed aside and replaced, never
   silently deleted.
-- The **undo RPC** accepts a completed journal for the active session's **chain tail** only,
-  refuses an already-undone entry, verifies every applied path still matches its post-restore
-  state, and rejects the whole batch with `stale-undo` (listing the paths) when the user
-  edited a file after the rewind. Success patches `undoneAt` / `undoOutcome` / `undoMode`;
-  undo restores **files only** because the conversation nodes were removed from the surface.
+- The **undo RPC** accepts the session's completed undo record for its **chain tail** only,
+  refuses an already-undone entry (`undo-consumed`) or one whose record is gone
+  (`undo-unavailable`, with a reason), verifies every applied path still matches its
+  post-restore state, and rejects the whole batch with `stale-undo` (listing the paths) when
+  the user edited a file after the rewind. Success patches `undoneAt` / `undoOutcome` /
+  `undoMode`; undo restores **files only** because the conversation nodes were removed from
+  the surface.
   An undo writes the worktree through plain `node:fs` exactly like a rewind, so it runs the
   same **settle step**: it re-emits `fs/observed` for every restored/deleted path and drops
   the session's turn-anchor cache. Skipping it makes the session's next write of a restored

@@ -1020,9 +1020,17 @@ export function createRewindRpcHandler(
             },
           }
         } catch (error) {
-          const code = (error as { code?: string }).code === 'stale-undo'
+          const errorCode = (error as { code?: string }).code
+          // Distinguish WHY the undo cannot run: a consumed undo, a snapshot
+          // that is gone, and a user edit are different answers, and collapsing
+          // them into `undo-failed` is what made the old button lie.
+          const code = errorCode === 'stale-undo'
             ? 'rewind/stale-undo'
-            : 'rewind/undo-failed'
+            : errorCode === 'undo-consumed'
+              ? 'rewind/undo-consumed'
+              : errorCode === 'undo-unavailable'
+                ? 'rewind/undo-unavailable'
+                : 'rewind/undo-failed'
           const stalePaths = (error as { stalePaths?: readonly string[] }).stalePaths
           return rpcFailure(
             code,

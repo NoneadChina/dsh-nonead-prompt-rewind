@@ -214,12 +214,16 @@ hostile journal cannot point a restore or rollback outside the session directory
 names either an entry sidecar (`<anchorSeq>/<callId-base>.before`) or a rescue copy
 (`rescue/<opId>/<n>.before`). `{text}` refs carry content with no sidecar: a legacy
 entry's inline string, or a legacy journal's inline strings.
-State machine: `running` and `rollback-running` are non-terminal; `completed` and
-`rolled-back` are terminal. Reconciliation reports a still non-terminal op as
-`interrupted`, and a `recovery-required` op when a rollback could not complete or the
-journal is corrupt; the journal's own `state` stays non-terminal in both cases. A journal
-read from a legacy-prefix file is rewritten in place (same file) as `version: 2` when a
-redo or rollback completes, so one op never leaves two divergent versions on disk.
+State machine: `running` and `rollback-running` are non-terminal; `rolled-back` is terminal
+and is recycled with its rescue bytes by the next prune pass. `completed` is also settled,
+but it doubles as the session's **undo record**: pruning keeps the newest completed journal
+and the anchor groups its stale check reads, and a new rewind retires the previous undo
+record (journal plus `rescue/`) before writing its own. A completed journal therefore
+survives ordinary pruning but never accumulates — at most one exists per session.
+Reconciliation reports a still non-terminal op as `interrupted`, and a `recovery-required` op
+when a rollback could not complete or the journal is corrupt; the journal's own `state` stays
+non-terminal in both cases. A `recovery-required` or `rollback-running` journal can be
+retried: the next undo resumes the rollback from the recorded rescue state.
 ## 9. Rewind history partition
 History is a separate root with a separate schema and lifetime:
 
@@ -305,9 +309,10 @@ mount is alive.
   for `rollback-running` and `recovery-required` ones); a path that already matches is marked done without being touched. The plugin never reconciles
   on its own — an interrupted op stays interrupted until an explicit caller resolves it.
 - **Bounded storage.** `prune` keeps the newest 100 anchor groups per session (`MAX_ANCHOR_GROUPS`) and materializes surviving links before deleting
-  those directories; it also recycles terminal journals with their `rescue/<opId>/` bytes and collects `.pending/` captures older than 24 h. A group a
-  non-terminal journal still references is pinned, so the effective window may exceed the cap until that op is resolved. Non-terminal and corrupt
-  journals are always kept.
+  those directories; it recycles `rolled-back` journals with their `rescue/<opId>/` bytes, while the newest `completed` journal — the **undo record** —
+  is kept together with the groups its stale check reads. `.pending/` captures older than 24 h are collected. A group a non-terminal or completed
+  journal references is pinned, so the effective window may exceed the cap until that op is resolved or undone. A new restore retires the previous
+  completed journal before writing its own, so the undo record never accumulates. Non-terminal and corrupt journals are always kept.
 ## 12. Validation and failure policy
 - **Entries** are read defensively. A missing, malformed, or self-contradictory entry is read as `undefined` (skipped): losing one backup is
   acceptable, guessing is not. Contradictions are corruption — `blob: null` with `size !== 0`, `lossy` together with `blob: null`, a `blob` that is

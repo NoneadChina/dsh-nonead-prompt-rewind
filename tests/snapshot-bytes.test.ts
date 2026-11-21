@@ -456,19 +456,25 @@ describe('footprint reporting and reclamation', () => {
     expect(report.bytes).toBeGreaterThan(8)
   })
 
-  it('reclaims a terminal journal together with its rescue copy', async () => {
+  it('reclaims a rolled-back journal together with its rescue copy', async () => {
     const live = await touch('rescue.bin', Buffer.from('A0'))
     await captureAndRecord('c1', 5, live)
     await writeFile(live, Buffer.from('A1'))
-    await store.restoreAfter(session, 5, unlink)
+    await store.restoreAfter(session, 5, unlink, undefined, { opId: 'op-reclaim' })
 
     const sessionDir = store.sessionDir(session)
     const rescueDir = join(sessionDir, 'rescue')
     await expect(readdir(rescueDir)).resolves.toHaveLength(1)
 
+    // A completed journal is the UNDO record and its rescue copy is what the
+    // undo writes back: the prune pass must keep both.
     await store.prune(session, 1)
-    // The terminal journal is recycled and its rescue copy goes with it — the
-    // bytes are dead weight once the op finished.
+    await expect(readdir(rescueDir)).resolves.toHaveLength(1)
+
+    // Once the undo is spent the record is terminal dead weight.
+    const undone = await store.undoRestore(session, 'op-reclaim', unlink)
+    expect(undone.failed).toEqual([])
+    await store.prune(session, 1)
     await expect(readdir(rescueDir)).resolves.toHaveLength(0)
   })
 })
