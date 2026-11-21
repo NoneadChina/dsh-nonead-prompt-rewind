@@ -153,13 +153,24 @@ session/event        reconcileTracked: at every user-message boundary, re-stat e
                      store disables file restore for that session), reconcileFormatVersion (a
                      different session format clears that session's snapshot directory).
 ```
-Storage is bounded four ways: a regular file over the per-file cap (default 8 MiB;
-`maxFileBytes: 0` disables it) is never backed up; content-identical before-states become dedup
+Storage is bounded six ways: the capture policy refuses temporary/render directories
+(`.dsh-tmp`, `.dsh`, browser profiles, `renders`, `temp`, …), media/binary extensions, and
+(unless `snapshotBinaries` is on) files whose first 8 KiB contain a NUL byte; `snapshotIncludeGlobs`
+overrides both extension and sniff rules, while `snapshotExcludeGlobs` adds more; a regular file
+over the per-file cap (default 8 MiB; `maxFileBytes: 0` disables it) is never backed up, and the
+automatic first-sight scan uses a lower 1 MiB cap; content-identical before-states become dedup
 links instead of second copies; `prune` keeps the newest 100 anchor groups per session and
-materializes a surviving link pointing into a group being dropped; the optional age-based sweep
-removes whole long-inactive session directories — except a directory that still holds a
-non-terminal (or unclassifiable) restore journal, or one written by a newer store version: both
-are recovery data this build must not destroy. A non-terminal restore journal pins the groups
+materializes a surviving link pointing into a group being dropped. A retention horizon
+(`retentionDays`, default 7) additionally evicts groups older than it even below the count cap,
+while always keeping the newest 30; the highest evicted sequence is persisted as a per-session
+`pruned` watermark, so a preview or rewind targeting older history reports the file half as
+unavailable instead of presenting an empty plan as complete. Two byte budgets sit on top:
+`maxSessionBytes` (default 256 MiB) evicts the oldest whole anchor groups of a session as soon as a
+commit crosses it, and `maxTotalBytes` (default 2 GiB) evicts the least-recently-active session
+directories (never a session currently being driven) down to 80% of the cap. Finally, the optional
+age-based sweep removes whole long-inactive session directories — except a directory that still
+holds a non-terminal (or unclassifiable) restore journal, or one written by a newer store version:
+both are recovery data this build must not destroy. A non-terminal restore journal pins the groups
 its actions reference, so an interrupted op stays continuable. Exact numbers and fields are in
 [format.md](format.md).
 

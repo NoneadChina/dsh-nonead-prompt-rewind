@@ -335,7 +335,7 @@ describe('integrity rules', () => {
     // "never recorded" and take a faithful copy (ADR-12: fail toward storing
     // MORE). That also heals the path: later rewinds restore exact bytes
     // instead of skipping it.
-    const live = await touch('heal.bin', Buffer.from([0xd6, 0xd0]))
+    const live = await touch('heal-legacy.txt', Buffer.from([0xd6, 0xd0]))
     await mkdir(store.anchorDir(session, 5), { recursive: true })
     await writeFile(join(store.anchorDir(session, 5), 'legacy.json'), JSON.stringify({
       callId: 'legacy', anchorSeq: 5, path: live, before: '\uFFFD\uFFFD', time: 1,

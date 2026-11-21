@@ -53,7 +53,8 @@ import type { ArchiveEvent } from './archive.ts'
 import z from '@deepseek-ai/schemastery'
 import { preferredLocale, translate, type HostKey, type HostLocaleId } from './locales.ts'
 import { listRewindCandidates, parseRewindTarget, planRewind, REWIND_MARKER_SOURCE, RewindError, type RewindPlan } from './rewind.ts'
-import { DEFAULT_MAX_FILE_BYTES, MAX_ANCHOR_GROUPS, reconcileTracked, SnapshotStore, UnknownStoreVersionError, type ClearSessionReport, type FileImpact, type PendingBackup, type PruneStaleReport, type RestoreOutcome, type UncoveredPath } from './snapshot.ts'
+import { DEFAULT_MAX_FILE_BYTES, DEFAULT_RETENTION_DAYS, MAX_ANCHOR_GROUPS, reconcileTracked, SnapshotStore, UnknownStoreVersionError, type ClearSessionReport, type FileImpact, type PendingBackup, type PruneStaleReport, type RestoreOutcome, type UncoveredPath } from './snapshot.ts'
+import { DEFAULT_MAX_SESSION_BYTES, DEFAULT_MAX_TOTAL_BYTES } from './snapshot-policy.ts'
 import { discoverWorkspaceFiles, DEFAULT_SCAN_MAX_BYTES, DEFAULT_SCAN_MAX_FILES } from './workspace-scan.ts'
 import {
   AUTO_SWEEP_INTERVAL_MS,
@@ -150,12 +151,25 @@ export interface WorkspaceScanSettings {
 }
 
 /**
+ * Store-side capture policy and byte budgets. Resolved once per mount (not
+ * volatile): they shape how bytes are stored, not what the next call does.
+ */
+export interface SnapshotPolicySettings {
+  readonly maxSessionBytes?: number
+  readonly maxTotalBytes?: number
+  readonly retentionDays?: number
+  readonly snapshotBinaries?: boolean
+  readonly snapshotExcludeGlobs?: readonly string[]
+  readonly snapshotIncludeGlobs?: readonly string[]
+}
+
+/**
  * The plugin's full configuration: store options plus the user-editable policy
  * fields. `.volatile()` resolves them into live references for the Plugins
  * page; the names say what they gate, because a bare `enabled` would read like
  * the entry's own `disabled:` flag.
  */
-export interface Config extends RewindConfig, CleanupSettings, FileCheckpointingSettings, HistorySettings, WorkspaceScanSettings {}
+export interface Config extends RewindConfig, CleanupSettings, FileCheckpointingSettings, HistorySettings, WorkspaceScanSettings, SnapshotPolicySettings {}
 
 /** The `Config` schema the host resolves and projects as this entry's form. */
 export const Config = z.object({
@@ -164,6 +178,20 @@ export const Config = z.object({
   dedup: z.boolean().default(true),
   maxFileBytes: z.number().step(1).min(0).default(DEFAULT_MAX_FILE_BYTES),
   maxAnchorGroups: z.number().step(1).min(1).default(MAX_ANCHOR_GROUPS),
+  // Byte budgets: the count cap alone cannot stop a session full of 2 MiB
+  // render frames from reaching gigabytes. Eviction is link-aware and drops
+  // the oldest anchor groups first.
+  maxSessionBytes: z.number().step(1).min(0).default(DEFAULT_MAX_SESSION_BYTES),
+  maxTotalBytes: z.number().step(1).min(0).default(DEFAULT_MAX_TOTAL_BYTES),
+  // File-history horizon: groups older than this many days are evicted even
+  // below the count cap; the newest 30 always stay. `0` disables the horizon.
+  retentionDays: z.number().step(1).min(0).default(DEFAULT_RETENTION_DAYS),
+  // Capture policy. Binaries are off by default (media, model weights and
+  // archives are reproducible and dominate the footprint); the glob lists are
+  // the explicit escape hatches.
+  snapshotBinaries: z.boolean().default(false),
+  snapshotExcludeGlobs: z.array(z.string()).default([]),
+  snapshotIncludeGlobs: z.array(z.string()).default([]),
   autoSweepIntervalMs: z.number().step(1).min(1).default(AUTO_SWEEP_INTERVAL_MS),
   fileCheckpointingEnabled: z.boolean().default(DEFAULT_FILE_CHECKPOINTING_ENABLED).volatile(),
   autoCleanupEnabled: z.boolean().default(DEFAULT_CLEANUP_CONFIG.enabled).volatile(),
@@ -441,6 +469,11 @@ async function captureBefore(
   // (issue #39). The path is deliberately not registered as tracked: with no
   // record there is no history to contradict, so nothing can be mis-restored.
   if (info !== undefined && store.isOverFileCap(info.size)) return
+  // CAPTURE POLICY: never stage bytes the store refuses (media, render output,
+  // browser profiles, unknown binaries). The refusal is remembered so a rewind
+  // preview reports the path as uncovered instead of implying a full restore.
+  const decision = await store.shouldSnapshot(agent.session.id, target.displayPath, cwd)
+  if (!decision.ok) return
   const key = `${exec.agent?.id ?? 'anon'}:${exec.callId}`
   if (info === undefined) {
     pending.set(key, { path: target.displayPath, backup: null })
@@ -527,6 +560,12 @@ async function captureWorkspaceFirstSightings(
     try {
       const info = await stat(path)
       if (!info.isFile()) continue
+      // Policy gate first: the scan is automatic (no user intent behind a
+      // particular path), so it applies the stricter 1 MiB scan ceiling and the
+      // directory/extension/binary rules. Refusals are remembered as uncovered.
+      const decision = await store.shouldSnapshot(sessionId, path, cwd)
+      if (!decision.ok) continue
+      if (store.isOverScanFileCap(info.size)) continue
       // Never stage an over-cap file: the store would reject the entry and the
       // copy would have already paid the whole read.
       if (store.isOverFileCap(info.size)) continue
@@ -731,6 +770,8 @@ interface PreviewImpact {
   readonly uncovered: readonly UncoveredPath[]
   /** New snapshots are disabled; the restore may be incomplete. */
   readonly backupOff: boolean
+  /** The target predates the retained file history (conversation-only rewind). */
+  readonly filesUnavailable: boolean
 }
 
 /** Compute one target's file impact against the current disk. */
@@ -748,8 +789,15 @@ async function previewImpact(
     if (!(error instanceof UnknownStoreVersionError)) throw error
     throw new Error(t('storeUnsupported', { version: await store.readStoreVersion(session.id) ?? 0 }))
   }
+  const prunedThrough = await store.readPrunedThrough(session.id).catch(() => 0)
+  const filesUnavailable = plan.targetSeq < prunedThrough
+  if (filesUnavailable) {
+    // The before-images needed to rebuild this target are gone: say so instead
+    // of showing a partial file list that would read as "nothing changes".
+    return { files: [], uncovered: [], backupOff: !checkpointingEnabled, filesUnavailable }
+  }
   const uncovered = await store.uncoveredPaths(session.id).catch(() => [] as UncoveredPath[])
-  return { files: impacts, uncovered, backupOff: !checkpointingEnabled }
+  return { files: impacts, uncovered, backupOff: !checkpointingEnabled, filesUnavailable }
 }
 
 /** Result envelope of one rewind RPC endpoint. */
@@ -1426,6 +1474,10 @@ async function executeRewind(
     // address the journal from the entry it rendered (§6.3).
     const historyAt = Date.now()
     const historyOpId = newOpId(historyAt)
+    // The retention horizon may have evicted the groups this target needs: the
+    // conversation still rewinds, but the file half is reported unavailable.
+    const prunedThrough = await store.readPrunedThrough(agent.session.id).catch(() => 0)
+    const filesUnavailable = plan.targetSeq < prunedThrough
     // The conversation and the workspace files always rewind together —
     // there is no mode selection (docs/DEVELOPMENT-GUIDE.zh.md §4.1).
     {
@@ -1436,14 +1488,21 @@ async function executeRewind(
       // recorded, no symlink/hard link, differing from the disk.
       let outcome: RestoreOutcome | undefined
       try {
-        outcome = await store.restoreAfter(
-          agent.session.id,
-          plan.targetSeq,
-          path => unlink(path),
-          undefined,
-          { opId: historyOpId },
-        )
-        restoreOutcome = outcome
+        if (filesUnavailable) {
+          // Degrade explicitly: moving a partial/empty action set onto the disk
+          // would look like "nothing changed", which is a lie about the loss.
+          restoreRefusal = t('filesPruned')
+          restore = `${t('sep.clause')}${restoreRefusal}`
+        } else {
+          outcome = await store.restoreAfter(
+            agent.session.id,
+            plan.targetSeq,
+            path => unlink(path),
+            undefined,
+            { opId: historyOpId },
+          )
+          restoreOutcome = outcome
+        }
       } catch (error) {
         // Snapshots written by a newer build: fail the FILE RESTORE closed
         // (nothing was changed) while the conversation rewind above already
@@ -1516,7 +1575,12 @@ async function executeRewind(
       hadFiles: hadFileWork,
       shadowed: plan.shadowedSeqs.length,
       preview: previewOfTarget(agent.session, plan.targetSeq),
-      ...(restoreRefusal !== undefined ? { errorCode: 'store-unsupported', errorText: restoreRefusal } : {}),
+      ...(restoreRefusal !== undefined
+        ? {
+            errorCode: filesUnavailable ? 'files-pruned' : 'store-unsupported',
+            errorText: restoreRefusal,
+          }
+        : {}),
       ...(restoreOutcome === undefined
         ? {}
         : {
@@ -1594,25 +1658,33 @@ async function handleRewind(
   return executeRewind(ctx, store, fs, invocation, target, inflight, checkpointingEnabled, history, settle)
 }
 
-/** Whether THIS MOUNT already ran its one-shot auto-cleanup check. */
-let autoSweepChecked = false
+/**
+ * In-memory re-check interval for the lazy auto-cleanup gate. The persisted
+ * last-sweep time already throttles the SWEEP to the configured cadence; this
+ * shorter interval only stops a long-lived mount from consulting the policy
+ * (and the state file) on every single activity.
+ */
+const AUTO_CLEANUP_RECHECK_MS = 60 * 60 * 1000
+
+/** When THIS MOUNT last ran (or skipped) the auto-cleanup check, 0 = never. */
+let lastAutoCleanupCheckAt = 0
 
 /**
- * One-shot lazy auto-cleanup gate. The FIRST session activity of a mount (a
- * user message or a tool result) performs a single check: it reads the policy
- * and the persisted last-sweep time and, only when enabled AND the configured
- * cadence has elapsed, runs the sweep and re-anchors the window on disk. After
- * that one check the mount stops considering auto-cleanup (a mount reads the
- * policy at most once), while the cadence survives a restart because the
- * last-sweep time is persisted rather than kept in memory. Runs in the
- * background (voided by callers) and NEVER rejects: an invalid config
- * fail-closes (deletes nothing) and logs, and a prune failure logs — neither
- * blocks the activity that triggered it. The active `sessionId` is the one
- * directory that must never be pruned.
+ * Lazy auto-cleanup gate. The FIRST session activity of a mount (a user
+ * message or a tool result) performs a check: it reads the policy and the
+ * persisted last-sweep time and, only when enabled AND the configured cadence
+ * has elapsed, runs the sweep and re-anchors the window on disk. A long-lived
+ * mount re-consults at most once an hour instead of never again, so enabling
+ * cleanup (or leaving the host running) does not park the sweep forever. The
+ * cadence itself survives a restart because the last-sweep time is persisted.
+ * Runs in the background (voided by callers) and NEVER rejects: an invalid
+ * config fail-closes (deletes nothing) and logs, and a prune failure logs —
+ * neither blocks the activity that triggered it. The active `sessionIds` (and
+ * the one that triggered the check) are never pruned.
  *
  * The gate is re-armed by every `apply` (see the reset there), so a live
  * disable → enable round trip checks again instead of inheriting the previous
- * mount's "already checked" flag.
+ * mount's timestamp.
  * @param signal - the mount's lifecycle signal; an aborted mount writes nothing.
  */
 async function maybeRunAutoCleanup(
@@ -1622,9 +1694,12 @@ async function maybeRunAutoCleanup(
   dshHome: string | undefined,
   sweepIntervalMs: number | undefined,
   signal: AbortSignal | undefined,
+  keepActiveIds?: Iterable<string>,
 ): Promise<void> {
-  if (autoSweepChecked || signal?.aborted === true) return
-  autoSweepChecked = true
+  if (signal?.aborted === true) return
+  const now = Date.now()
+  if (now - lastAutoCleanupCheckAt < AUTO_CLEANUP_RECHECK_MS) return
+  lastAutoCleanupCheckAt = now
   try {
     await runAutoCleanupCheck({
       pruner: store,
@@ -1633,6 +1708,7 @@ async function maybeRunAutoCleanup(
       log: msg => ctx.logger.warn(msg),
       ...(sweepIntervalMs === undefined ? {} : { intervalMs: sweepIntervalMs }),
       ...(signal === undefined ? {} : { signal }),
+      ...(keepActiveIds === undefined ? {} : { keepActiveIds }),
     }, sessionId)
   } catch (error) {
     // The helper is contracted never to reject; this covers the one remaining
@@ -1887,7 +1963,7 @@ export function apply(ctx: Context, config?: Config): void {
   // so the command descriptions registered below carry the user's language.
   activeLocale = readHostLocale(ctx)
   cleanupStore = undefined
-  autoSweepChecked = false
+  lastAutoCleanupCheckAt = 0
   // Cancels this mount's in-flight background work when the fiber disposes: the
   // live plugin manager can unload the plugin at any moment, and neither async
   // listener body may keep writing to disk or reading a disposed service.
@@ -1905,6 +1981,12 @@ export function apply(ctx: Context, config?: Config): void {
     dshHome,
     maxFileBytes: config?.maxFileBytes,
     maxAnchorGroups: config?.maxAnchorGroups,
+    maxSessionBytes: config?.maxSessionBytes,
+    maxTotalBytes: config?.maxTotalBytes,
+    retentionDays: config?.retentionDays,
+    snapshotBinaries: config?.snapshotBinaries,
+    excludeGlobs: config?.snapshotExcludeGlobs,
+    includeGlobs: config?.snapshotIncludeGlobs,
   })
   // ---- rewind history (audit trail, never a restore source) ----
   // Root: alongside an explicit snapshot root, else `<dsh home>/rewind-history`.
@@ -1974,6 +2056,15 @@ export function apply(ctx: Context, config?: Config): void {
   // path joins as soon as a write-class tool commits an entry for it). Used
   // by the user-message boundary re-check below.
   const trackedBySession = new Map<string, Set<string>>()
+  // Sessions this mount has seen activity from. The age sweep and the global
+  // byte budget never evict one of them: with several windows open, "the other
+  // session" is just as live as the one that triggered the check.
+  const activeSessions = new Set<string>()
+  const noteActiveSession = (sessionId: string): void => {
+    if (activeSessions.has(sessionId)) return
+    activeSessions.add(sessionId)
+    store.setActiveSessions(activeSessions)
+  }
   // The fs service, captured from the dynamic `ctx.inject(['fs'])` scope and
   // handed to the command path for the post-restore observation sync.
   // Undefined until the service mounts (or in fs-less deployments): the sync
@@ -2138,9 +2229,10 @@ export function apply(ctx: Context, config?: Config): void {
       try {
         if (lifecycle.signal.aborted) return
         const sessionId = session.id
+        noteActiveSession(sessionId)
         // Lazy auto-cleanup: a user message is the practical first trigger of a
         // day; it runs in the background and fail-closes on config error.
-        void maybeRunAutoCleanup(ctx, store, sessionId, dshHome, config?.autoSweepIntervalMs, lifecycle.signal)
+        void maybeRunAutoCleanup(ctx, store, sessionId, dshHome, config?.autoSweepIntervalMs, lifecycle.signal, activeSessions)
         // Cleanup above stays independent; the switch stops NEW checkpoints only.
         if (!isFileCheckpointingEnabled(config)) return
         let tracked = trackedBySession.get(sessionId)
@@ -2198,6 +2290,10 @@ export function apply(ctx: Context, config?: Config): void {
     scope.effect(() => () => { fsService = undefined }, 'dsh-rewind fs capture')
     scope.on('tools/execute', async (exec: ToolExecution, next): Promise<ToolExecutionResult> => {
       try {
+        // A tool call in flight makes this session live for the duration of the
+        // mount: the byte budget and the age sweep must not evict it.
+        const owner = exec.agent?.session
+        if (owner !== undefined && !isSubagentSession(owner)) noteActiveSession(owner.id)
         if (isFileCheckpointingEnabled(config)) {
           // Shell first: a mutating command can DELETE a file the write-class
           // capture has never seen, so every never-recorded workspace file is
@@ -2237,7 +2333,8 @@ export function apply(ctx: Context, config?: Config): void {
         // triggers the same one-shot sweep with the correct id.
         const session = exec.agent?.session
         if (session !== undefined && !isSubagentSession(session)) {
-          void maybeRunAutoCleanup(ctx, store, session.id, dshHome, config?.autoSweepIntervalMs, lifecycle.signal)
+          noteActiveSession(session.id)
+          void maybeRunAutoCleanup(ctx, store, session.id, dshHome, config?.autoSweepIntervalMs, lifecycle.signal, activeSessions)
         }
         // Deletion pass FIRST: a failed tool still may have removed files, and
         // the re-anchor must happen regardless of the command's exit status.

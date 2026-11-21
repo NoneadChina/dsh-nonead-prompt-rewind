@@ -95,7 +95,25 @@ Semantics a reader may rely on:
   A sidecar that is missing, not a regular file, or a different size than `size` is an integrity failure — never a silent "the file was created".
 - **Size cap.** A regular file larger than `DEFAULT_MAX_FILE_BYTES` (8 MiB) is not backed up;
   the cap is exposed as `maxFileBytes`, where `0` disables it. The capture is skipped entirely
-  — never recorded as a creation, which a rewind would turn into a delete.
+  — never recorded as a creation, which a rewind would turn into a delete. The automatic
+  first-sight scan uses the lower `DEFAULT_SCAN_MAX_FILE_BYTES` (1 MiB).
+- **Capture policy.** Before staging, `decideSnapshotPath` refuses temporary/render directories,
+  media/binary extensions, and (unless `snapshotBinaries` is on) files whose first 8 KiB contain a
+  NUL byte; `snapshotIncludeGlobs` overrides extension and sniff refusals, `snapshotExcludeGlobs`
+  adds refusals. A refused path is remembered per session so `uncovered` names it; nothing about
+  the on-disk format changes.
+- **Byte budgets.** `maxSessionBytes` (default 256 MiB) evicts the oldest whole anchor groups as
+  soon as a commit crosses it, and `maxTotalBytes` (default 2 GiB) evicts the least-recently-active
+  session directories (never one currently being driven) down to 80%. Eviction is link-aware and
+  reuses `prune`, so no surviving link dangles; a pinned recovery journal may keep a group alive.
+- **Retention horizon.** `retentionDays` (default 7; `0` disables it) makes `prune` evict groups
+  older than the window even below `maxAnchorGroups`, while always keeping the newest
+  `DEFAULT_MIN_ANCHOR_GROUPS` (30) groups. The highest evicted `anchorSeq` is written to a
+  `pruned` file in the session directory (plain decimal text, atomic temp+rename, monotonic).
+  `pruned` is non-numeric beside numbered anchor directories, so it is never read as an entry or a
+  group; a missing or unparsable file means `0` ("never pruned"). A target below the watermark
+  cannot restore files: preview reports `filesUnavailable` and the rewind skips the restore pass
+  rather than applying an empty plan.
 - **`blob: null` means the call created the file.** It is valid only with `size: 0` and never together with `lossy`; a contradiction is corruption,
   because guessing an entry's kind is how a restore turns into a delete.
 - **`anchorSeq` is the parent directory**, deliberately not a field. Rewinding to message N applies every entry anchored at or after N — the boundary

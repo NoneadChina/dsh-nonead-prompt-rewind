@@ -119,7 +119,7 @@ const fakeWorkingDirectory = { ensure: async () => sessionDirectory }
 // The plugin's own `Config` schema resolves the live cleanup references (the
 // same call the Loader makes), and `tmpRoot` stays unrouted: `snapshotDir` /
 // `dshHome` are pinned by the config below.
-const resolvedConfig = Config({ snapshotDir: snapRoot, dshHome: tmpRoot, maxFileBytes: CAP_BYTES })
+const resolvedConfig = Config({ snapshotDir: snapRoot, dshHome: tmpRoot, maxFileBytes: CAP_BYTES, snapshotBinaries: true })
 // The fake entry's stored user layer, under the DOCUMENT's field names (what
 // the plugin's writes address): PRESENCE, not value, is what marks an override,
 // exactly like the real document. It starts empty, so every field resolves from
@@ -458,7 +458,7 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
 // 4b. a non-UTF-8 / binary file round-trips byte-exactly through the real
 //     capture → commit → restore pipeline (the issue #23 regression)
 {
-  const binPath = join(wsDir, 'binary.bin')
+  const binPath = join(wsDir, 'binary.dat')
   // GBK text with an embedded NUL and a raw 0xFF: not decodable as UTF-8.
   const gbk = Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0x00, 0xff, 0x89, 0x50, 0x4e, 0x47])
   await writeFile(binPath, gbk)
@@ -488,7 +488,7 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
 
   // The reporter's own repro (issue #23): 4096 random bytes, touched by a
   // tracked tool call, then a rewind — the digest must be unchanged.
-  const blobPath = join(wsDir, 'blob.bin')
+  const blobPath = join(wsDir, 'blob.dat')
   const blob = randomBytes(4096)
   const digest = b => createHash('sha256').update(b).digest('hex')
   const blobDigest = digest(blob)
@@ -508,7 +508,7 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
 //     conversation rewind still succeeds, the workspace is untouched, and the
 //     user sees why (ADR-10).
 {
-  const futurePath = join(wsDir, 'future.bin')
+  const futurePath = join(wsDir, 'future.dat')
   await writeFile(futurePath, Buffer.from('original'), 'utf8')
   session.append('user/message', user('future anchor question'), { surfaceOp: 'append' })
   const futureAnchor = session.snapshotEvents().findLast(event => event.type === 'user/message').seq
@@ -562,7 +562,7 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
 //     destructive failure mode could hide — a skipped capture must not become a
 //     "was created" record, which a rewind would turn into a DELETE.
 {
-  const bigPath = join(wsDir, 'over-cap.bin')
+  const bigPath = join(wsDir, 'over-cap.dat')
   // The file exists FIRST, then an edit touches it: that is the reported
   // scenario (a large file already on disk being modified), and it keeps the
   // capture's "before" state unambiguous regardless of tool-callback ordering.
@@ -593,7 +593,7 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
   // past the cap. Its record cannot describe the current state, so a rewind
   // must refuse it AND name it in the preview (derived from the record + one
   // stat, so this report survives a restart).
-  const grewPath = join(wsDir, 'grew-over-cap.bin')
+  const grewPath = join(wsDir, 'grew-over-cap.dat')
   session.append('user/message', user('grew anchor question'), { surfaceOp: 'append' })
   const grewAnchor = session.snapshotEvents().findLast(event => event.type === 'user/message').seq
   await runWrite(agent, 'grew1', grewPath, 'small content')
@@ -825,7 +825,7 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
   await mkdir(outside, { recursive: true })
   await writeFile(join(outside, 'f.txt'), 'pin-decoy', 'utf8')
   await writeFile(join(outside, 'created.txt'), 'pin-decoy-created', 'utf8')
-  await symlink(outside, dir, 'dir')
+  await symlink(outside, dir, process.platform === 'win32' ? 'junction' : 'dir')
 
   const preview = await previewOf(pinAgent, pinAnchor)
   const both = await call(pinAgent, `@${pinAnchor}`)
@@ -854,7 +854,7 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
   const realDir = join(wsDir, 'linked-real')
   await mkdir(realDir, { recursive: true })
   const linkDir = join(wsDir, 'linked')
-  await symlink(realDir, linkDir, 'dir')
+  await symlink(realDir, linkDir, process.platform === 'win32' ? 'junction' : 'dir')
   const viaLink = join(linkDir, 'f.txt')
   await writeFile(viaLink, 'link-before', 'utf8')
   await runWrite(linkAgent, 'link1', viaLink, 'link-edited')

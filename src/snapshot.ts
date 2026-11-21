@@ -42,6 +42,16 @@ import type { Stats } from 'node:fs'
 import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import {
+  DEFAULT_MAX_SESSION_BYTES,
+  DEFAULT_MAX_TOTAL_BYTES,
+  DEFAULT_SCAN_MAX_FILE_BYTES,
+  decideSnapshotPath,
+  isBinaryFile,
+  type SnapshotPathDecision,
+  type SnapshotPolicyOptions,
+  type SnapshotSkipReason,
+} from './snapshot-policy.ts'
 
 /** Sub-directory of the harness home holding this plugin's snapshots. */
 const SNAPSHOT_DIR_NAME = 'rewind-snapshots'
@@ -81,6 +91,21 @@ export const DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024
 
 /** Number of newest anchor groups (user messages) kept per session. */
 export const MAX_ANCHOR_GROUPS = 100
+
+/**
+ * Default retention horizon for anchor groups. A group older than this many
+ * days is evicted even when the session is far below {@link MAX_ANCHOR_GROUPS}:
+ * a rewind target that old degrades to a conversation-only rewind, which keeps
+ * the store bounded for long-lived sessions.
+ */
+export const DEFAULT_RETENTION_DAYS = 7
+
+/**
+ * Floor for the horizon window: the newest N groups are always kept, no matter
+ * how old they are (an idle session must still be able to rewind its last few
+ * turns). Never above {@link MAX_ANCHOR_GROUPS}.
+ */
+export const DEFAULT_MIN_ANCHOR_GROUPS = 30
 
 /**
  * Current on-disk store format version (the session's `store` marker value and
@@ -238,6 +263,10 @@ export interface UncoveredPath {
   readonly path: string
   /** Byte size observed on disk, when the probe could read one. */
   readonly size?: number
+  /** Present when the capture policy (not the size cap) left the path out. */
+  readonly reason?: 'excluded'
+  /** The specific policy exclusion, for diagnostics. */
+  readonly exclusion?: SnapshotSkipReason
 }
 
 /** Outcome of one restore pass. */
@@ -1055,6 +1084,13 @@ export class SnapshotStore {
   /** Plugin STORE-format marker file inside the session dir (non-`.json`, same reasoning). */
   private static readonly STORE_FILE = 'store'
 
+  /**
+   * Eviction watermark inside the session dir: the highest anchor group that
+   * has been deleted by the retention horizon. Rewind targets at or below it
+   * can no longer restore files and degrade to a conversation-only rewind.
+   */
+  private static readonly PRUNED_FILE = 'pruned'
+
   private lastPruneAt = 0
 
   /**
@@ -1085,6 +1121,61 @@ export class SnapshotStore {
    * this bound. A `Config` field (`maxAnchorGroups`).
    */
   private readonly maxAnchorGroups: number
+
+  /**
+   * Retention horizon in days for anchor groups; `<= 0` disables it. Groups
+   * older than this are evicted even below {@link maxAnchorGroups}, so a
+   * long-lived session does not keep every historical before-image. A `Config`
+   * field (`retentionDays`).
+   */
+  private readonly retentionDays: number
+
+  /**
+   * Per-session byte budget for stored before-images; `<= 0` disables it. When
+   * a commit pushes the session over, `pruneToBytes` evicts whole anchor groups
+   * (oldest first) down to 80% of the budget. A `Config` field
+   * (`maxSessionBytes`).
+   */
+  private readonly maxSessionBytes: number
+
+  /**
+   * Whole-store byte budget; `<= 0` disables it. Enforced at most once every
+   * {@link GLOBAL_BUDGET_INTERVAL_MS} by evicting the least-recently-active
+   * session directories (never a session in {@link activeSessionIds}).
+   */
+  private readonly maxTotalBytes: number
+
+  /** Whether the policy may capture binary content (default false). */
+  private readonly snapshotBinaries: boolean
+
+  /** User glob overrides layered on the built-in directory/extension policy. */
+  private readonly policy: SnapshotPolicyOptions
+
+  /** Content sniff for unknown extensions (injectable for tests). */
+  private readonly binaryProbe: (path: string) => Promise<boolean>
+
+  /**
+   * Paths the policy refused, per session, with the reason — reported by
+   * {@link uncoveredPaths} so a rewind preview can say "this file was not
+   * backed up" instead of silently claiming a complete restore.
+   */
+  private readonly policySkips = new Map<string, Map<string, SnapshotSkipReason>>()
+
+  /**
+   * Cached on-disk footprint per session, seeded lazily from
+   * {@link sessionStats}. Only an optimization: an unknown entry is measured,
+   * never assumed zero.
+   */
+  private readonly sessionBytes = new Map<string, number>()
+
+  /** Sessions a caller currently drives; the global budget never evicts them. */
+  private readonly activeSessionIds = new Set<string>()
+
+  /** Last time the whole-store budget was enforced (throttles the full walk). */
+  private lastGlobalBudgetAt = 0
+
+  /** Minimum spacing between whole-store budget sweeps. */
+  private static readonly GLOBAL_BUDGET_INTERVAL_MS = 30_000
 
   /** Resolved checkpoint store root (absolute); see the constructor's fallback. */
   readonly root: string
@@ -1123,11 +1214,34 @@ export class SnapshotStore {
       readonly maxFileBytes?: number
       /** Newest anchor groups kept per session; see {@link MAX_ANCHOR_GROUPS}. */
       readonly maxAnchorGroups?: number
+      /** Retention horizon in days; `<= 0` disables it. See {@link DEFAULT_RETENTION_DAYS}. */
+      readonly retentionDays?: number
+      /** Per-session byte budget; `<= 0` disables it. */
+      readonly maxSessionBytes?: number
+      /** Whole-store byte budget; `<= 0` disables it. */
+      readonly maxTotalBytes?: number
+      /** Capture binary content too (default false; the policy still applies). */
+      readonly snapshotBinaries?: boolean
+      /** Extra exclude globs; see {@link SnapshotPolicyOptions}. */
+      readonly excludeGlobs?: readonly string[]
+      /** Include globs that override every exclusion (and the sniff). */
+      readonly includeGlobs?: readonly string[]
+      /** Content sniff override (tests pass a cheap stub). */
+      readonly binaryProbe?: (path: string) => Promise<boolean>
     },
   ) {
     this.dedup = opts?.dedup ?? true
     this.maxFileBytes = opts?.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES
     this.maxAnchorGroups = opts?.maxAnchorGroups ?? MAX_ANCHOR_GROUPS
+    this.retentionDays = opts?.retentionDays ?? DEFAULT_RETENTION_DAYS
+    this.maxSessionBytes = opts?.maxSessionBytes ?? DEFAULT_MAX_SESSION_BYTES
+    this.maxTotalBytes = opts?.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES
+    this.snapshotBinaries = opts?.snapshotBinaries ?? false
+    this.policy = {
+      ...(opts?.excludeGlobs !== undefined ? { excludeGlobs: opts.excludeGlobs } : {}),
+      ...(opts?.includeGlobs !== undefined ? { includeGlobs: opts.includeGlobs } : {}),
+    }
+    this.binaryProbe = opts?.binaryProbe ?? isBinaryFile
     // Deterministic store-root fallback (highest first): an explicit root
     // (config `snapshotDir`) → the harness-home base derived from
     // `config.dshHome` (via resolveDshHome: config.dshHome > `$DSH_HOME` >
@@ -1153,6 +1267,221 @@ export class SnapshotStore {
   /** The cap in force, for reporting (0 = unlimited). */
   get fileCapBytes(): number {
     return this.maxFileBytes
+  }
+
+  /** The per-session byte budget in force, for reporting (0 = unlimited). */
+  get sessionCapBytes(): number {
+    return this.maxSessionBytes
+  }
+
+  /** The whole-store byte budget in force, for reporting (0 = unlimited). */
+  get totalCapBytes(): number {
+    return this.maxTotalBytes
+  }
+
+  /**
+   * Tell the store which sessions are currently being driven. The whole-store
+   * budget never evicts one of them; a session's own byte budget still applies
+   * (a runaway session must not be allowed to fill the disk just because it is
+   * open).
+   */
+  setActiveSessions(sessionIds: Iterable<string>): void {
+    this.activeSessionIds.clear()
+    for (const id of sessionIds) this.activeSessionIds.add(safeSessionId(id))
+  }
+
+  /**
+   * True when a file first seen by the shell scan is too large to be captured
+   * automatically. Deliberately lower than {@link isOverFileCap}: an automatic
+   * scan has no user intent behind it, so it only picks up plausibly-restorable
+   * files (1 MiB by default), while an explicit tool write still uses the
+   * 8 MiB cap.
+   */
+  isOverScanFileCap(size: number | undefined): boolean {
+    return size !== undefined && size > DEFAULT_SCAN_MAX_FILE_BYTES
+  }
+
+  /**
+   * The capture policy gate: may `path` be backed up? Refusals are remembered
+   * per session so {@link uncoveredPaths} can report them — a rewind preview
+   * must be able to say "not backed up" instead of implying a complete restore.
+   *
+   * `includeGlobs` wins over everything (including the binary sniff);
+   * `snapshotBinaries` disables only the sniff, not the directory/extension
+   * rules.
+   */
+  async shouldSnapshot(
+    sessionId: string,
+    path: string,
+    workspaceRoot?: string,
+  ): Promise<SnapshotPathDecision> {
+    const decision = decideSnapshotPath(path, this.policy, workspaceRoot)
+    if (!decision.ok) {
+      this.rememberPolicySkip(sessionId, path, decision.reason)
+      return decision
+    }
+    if (decision.included === true || this.snapshotBinaries) return decision
+    if (await this.binaryProbe(path)) {
+      this.rememberPolicySkip(sessionId, path, 'binary')
+      return { ok: false, reason: 'binary' }
+    }
+    return decision
+  }
+
+  /** Record one policy refusal, replacing any earlier reason for the path. */
+  private rememberPolicySkip(sessionId: string, path: string, reason: SnapshotSkipReason): void {
+    let skips = this.policySkips.get(sessionId)
+    if (skips === undefined) {
+      skips = new Map()
+      this.policySkips.set(sessionId, skips)
+    }
+    skips.set(path, reason)
+  }
+
+  /** Numeric anchor-group sequence numbers of a session, ascending. */
+  private async anchorSeqs(sessionId: string): Promise<number[]> {
+    try {
+      const names = await readdir(this.sessionDir(sessionId))
+      return names.map(Number).filter(seq => Number.isSafeInteger(seq)).sort((a, b) => a - b)
+    } catch (error) {
+      if (isEnoent(error)) return []
+      throw error
+    }
+  }
+
+  /**
+   * Anchor-group bytes for a session, seeded from disk once per process and
+   * then maintained incrementally by {@link commit}. Only anchor groups count:
+   * journals and staged captures are temporary, not retention budget.
+   */
+  private async sessionUsage(sessionId: string): Promise<number> {
+    const cached = this.sessionBytes.get(sessionId)
+    if (cached !== undefined) return cached
+    let total = 0
+    for (const seq of await this.anchorSeqs(sessionId)) {
+      const measured = await dirSizeAndLastActive(this.anchorDir(sessionId, seq)).catch(() => undefined)
+      total += measured?.size ?? 0
+    }
+    this.sessionBytes.set(sessionId, total)
+    return total
+  }
+
+  /**
+   * Add one commit's stored bytes to the session's running total and return the
+   * new total. A dedup link stores no new bytes, so callers pass 0 for links.
+   */
+  private async noteStoredBytes(sessionId: string, delta: number): Promise<number> {
+    const next = Math.max(0, await this.sessionUsage(sessionId) + delta)
+    this.sessionBytes.set(sessionId, next)
+    return next
+  }
+
+  /**
+   * Evict the oldest whole anchor groups until the session is at or below
+   * `targetBytes`, keeping at least the newest group. Reuses {@link prune}'s
+   * link-aware materialization, so a surviving link never dangles; groups a
+   * non-terminal restore journal still needs stay pinned (the budget may then
+   * remain exceeded until that recovery resolves — by design).
+   *
+   * Returns the session's anchor bytes after the attempt.
+   */
+  async pruneToBytes(sessionId: string, targetBytes: number): Promise<number> {
+    const seqs = await this.anchorSeqs(sessionId)
+    if (seqs.length <= 1) return this.sessionUsage(sessionId)
+    const sizes = new Map<number, number>()
+    let total = 0
+    for (const seq of seqs) {
+      const measured = await dirSizeAndLastActive(this.anchorDir(sessionId, seq)).catch(() => undefined)
+      const bytes = measured?.size ?? 0
+      sizes.set(seq, bytes)
+      total += bytes
+    }
+    if (total <= targetBytes) {
+      this.sessionBytes.set(sessionId, total)
+      return total
+    }
+    const newest = seqs[seqs.length - 1]!
+    let drop = 0
+    for (const seq of seqs) {
+      if (total <= targetBytes || seq === newest) break
+      total -= sizes.get(seq) ?? 0
+      drop++
+    }
+    if (drop === 0) return total
+    await this.prune(sessionId, Math.max(1, seqs.length - drop))
+    // prune may have kept pinned groups and materialized links, so re-measure
+    // rather than trusting the arithmetic above.
+    this.sessionBytes.delete(sessionId)
+    return this.sessionUsage(sessionId)
+  }
+
+  /** Session directories under the store root, excluding dot-prefixed entries. */
+  private async sessionDirs(): Promise<Array<{ name: string; dir: string }>> {
+    let names: string[]
+    try {
+      names = await readdir(this.root)
+    } catch (error) {
+      if (isEnoent(error)) return []
+      throw error
+    }
+    const dirs: Array<{ name: string; dir: string }> = []
+    for (const name of names) {
+      if (name.startsWith('.')) continue
+      const dir = join(this.root, name)
+      const st = await lstat(dir).catch(() => undefined)
+      if (st?.isDirectory() === true) dirs.push({ name, dir })
+    }
+    return dirs
+  }
+
+  /**
+   * Enforce the whole-store budget: while the total is above the cap, remove
+   * the least-recently-active session directories (never a session in
+   * {@link activeSessionIds}) until the store is at or below 80% of the cap.
+   * A finished session's snapshots are dead weight (rewind only reads the
+   * session being driven), so whole-directory eviction is the correct unit —
+   * dedup refs are session-relative and cannot dangle across sessions. A
+   * session with an unfinished (or corrupt) restore journal is skipped: that
+   * journal may be the only way to reconcile an interrupted restore, so the
+   * budget yields to it rather than destroying the recovery record.
+   *
+   * Returns the measured total after the sweep. `<= 0` disables the budget.
+   */
+  async enforceTotalBudget(): Promise<number> {
+    if (this.maxTotalBytes <= 0) return 0
+    const dirs = await this.sessionDirs()
+    const rows: Array<{ name: string; dir: string; bytes: number; lastActiveMs: number }> = []
+    let total = 0
+    for (const { name, dir } of dirs) {
+      const measured = await dirSizeAndLastActive(dir).catch(() => undefined)
+      if (measured === undefined) continue
+      rows.push({ name, dir, bytes: measured.size, lastActiveMs: measured.lastActiveMs })
+      total += measured.size
+    }
+    if (total <= this.maxTotalBytes) return total
+    const target = Math.floor(this.maxTotalBytes * 0.8)
+    rows.sort((a, b) => a.lastActiveMs - b.lastActiveMs)
+    for (const row of rows) {
+      if (total <= target) break
+      if (this.activeSessionIds.has(row.name)) continue
+      if (await this.hasUnfinishedRecovery(row.name)) continue
+      await this.clearSession(row.name)
+      this.sessionBytes.delete(row.name)
+      total -= row.bytes
+    }
+    await this.forgetMissingSessions()
+    return total
+  }
+
+  /**
+   * Whether a session still owns a restore journal that has not reached a
+   * terminal state. Corrupt journals count too: dropping the directory would
+   * destroy the only evidence of what an interrupted restore was doing.
+   */
+  private async hasUnfinishedRecovery(sessionId: string): Promise<boolean> {
+    const { journals, corrupt } = await this.listJournals(sessionId)
+    if (corrupt.length > 0) return true
+    return journals.some((journal) => journal.state !== 'completed' && journal.state !== 'rolled-back')
   }
 
   /** Absolute path of one anchor group directory. */
@@ -1182,6 +1511,8 @@ export class SnapshotStore {
   private forgetSession(sessionId: string): void {
     this.seededSessions.delete(sessionId)
     this.storeStamped.delete(sessionId)
+    this.policySkips.delete(sessionId)
+    this.sessionBytes.delete(sessionId)
     for (const key of [...this.lastEntry.keys()]) {
       if (key.startsWith(`${sessionId}\0`)) this.lastEntry.delete(key)
     }
@@ -1386,6 +1717,7 @@ export class SnapshotStore {
       : content.staged !== undefined ? { kind: 'blob', path: content.staged.file } : content.source
     const link = this.dedup && opts?.dedup !== false && prior !== undefined
       && await this.sourcesMatch(prior.source, incoming)
+    let storedBytes = 0
     if (link) {
       const committed: LinkEntry = {
         callId: entry.callId,
@@ -1402,6 +1734,7 @@ export class SnapshotStore {
       this.lastEntry.set(key, { source: prior.source, ref: selfRef })
     } else {
       const placed = await this.placeSidecar(file, content)
+      storedBytes = placed?.size ?? 0
       const committed: CheckpointEntry = {
         callId: entry.callId,
         anchorSeq: entry.anchorSeq,
@@ -1436,10 +1769,31 @@ export class SnapshotStore {
     // Prune at most once per interval: a turn with many writes would otherwise
     // pay a readdir + sort on every commit. The 100-group cap still holds —
     // the debounce only skips redundant scans within a burst.
+    await this.noteStoredBytes(sessionId, storedBytes)
     const now = Date.now()
     if (now - this.lastPruneAt >= SnapshotStore.PRUNE_INTERVAL_MS) {
       this.lastPruneAt = now
-      await this.prune(sessionId)
+      // The age horizon runs on the same throttled path: both bounds shrink the
+      // same window, and a prune is already the expensive readdir+sort step.
+      await this.prune(sessionId, this.maxAnchorGroups, { horizonDays: this.retentionDays })
+      // The count cap may have removed groups, so the byte cache is stale.
+      this.sessionBytes.delete(sessionId)
+    }
+    let overSessionBudget = false
+    if (this.maxSessionBytes > 0) {
+      const usage = await this.sessionUsage(sessionId)
+      if (usage > this.maxSessionBytes) {
+        overSessionBudget = true
+        await this.pruneToBytes(sessionId, Math.floor(this.maxSessionBytes * 0.8))
+      }
+    }
+    // A session that had to be evicted is exactly when the whole store is
+    // worth re-measuring. The full walk is throttled so a write burst cannot
+    // turn it into a hot path.
+    if (overSessionBudget && this.maxTotalBytes > 0
+      && now - this.lastGlobalBudgetAt >= SnapshotStore.GLOBAL_BUDGET_INTERVAL_MS) {
+      this.lastGlobalBudgetAt = now
+      await this.enforceTotalBudget()
     }
   }
 
@@ -2453,7 +2807,19 @@ export class SnapshotStore {
    * real is still on disk and the kept link still resolves, so nothing dangles
    * and a later prune simply re-materializes.
    */
-  async prune(sessionId: string, keep = this.maxAnchorGroups, opts?: { readonly crash?: (point: CrashPoint) => void }): Promise<void> {
+  async prune(
+    sessionId: string,
+    keep = this.maxAnchorGroups,
+    opts?: {
+      readonly crash?: (point: CrashPoint) => void
+      /**
+       * Age horizon in days. When set, groups older than it are evicted even
+       * below `keep`; the newest {@link DEFAULT_MIN_ANCHOR_GROUPS} groups always
+       * survive. Omitted by byte-budget eviction, which has its own target.
+       */
+      readonly horizonDays?: number
+    },
+  ): Promise<void> {
     const sessionDir = this.sessionDir(sessionId)
     let names: string[]
     try {
@@ -2468,7 +2834,24 @@ export class SnapshotStore {
     await this.pruneTerminalJournals(sessionDir, names)
     await this.prunePendingCaptures(join(sessionDir, PENDING_DIR))
     const seqs = names.map(Number).filter(seq => Number.isSafeInteger(seq)).sort((a, b) => a - b)
-    const excess = seqs.length - keep
+    // The age horizon evicts even below the numeric cap, but never the newest
+    // floor and never more than `maxAnchorGroups` itself. A session that was
+    // idle for longer than the horizon keeps its last few turns usable.
+    let effectiveKeep = keep
+    const horizonDays = opts?.horizonDays
+    if (horizonDays !== undefined && horizonDays > 0) {
+      const cutoff = Date.now() - horizonDays * 24 * 60 * 60 * 1000
+      let within = 0
+      for (const seq of seqs) {
+        const st = await stat(this.anchorDir(sessionId, seq)).catch(() => undefined)
+        if (st !== undefined && st.mtimeMs >= cutoff) within += 1
+      }
+      effectiveKeep = Math.min(
+        this.maxAnchorGroups,
+        Math.max(within, DEFAULT_MIN_ANCHOR_GROUPS),
+      )
+    }
+    const excess = seqs.length - effectiveKeep
     if (excess <= 0) return
     const doomed = new Set(seqs.slice(0, excess))
     // A NON-TERMINAL journal still needs the sidecars its actions reference:
@@ -2549,6 +2932,11 @@ export class SnapshotStore {
     for (const seq of doomed) {
       await rm(this.anchorDir(sessionId, seq), { recursive: true, force: true })
     }
+    // Remember how far the file history now reaches back: a rewind target at or
+    // below this watermark can only rewind the conversation (the before-images
+    // needed to rebuild its files are gone). Written after the rm loop so a
+    // crash cannot advertise an eviction that did not happen.
+    if (doomed.size > 0) await this.markPrunedThrough(sessionId, Math.max(...doomed))
     // Dropping groups can invalidate in-memory dedup handles that pointed into
     // them: forget this session's dedup state so the next commit re-seeds from
     // the surviving window instead of linking to a deleted sidecar (R1).
@@ -2677,8 +3065,21 @@ export class SnapshotStore {
    * `dryRun` computes and reports exactly what would be removed without
    * deleting anything — the `/snapshot-auto-cleanup run` preview.
    */
-  async pruneStale(opts: { readonly keepActiveId?: string; readonly maxAgeDays: number; readonly dryRun?: boolean }): Promise<PruneStaleReport> {
+  async pruneStale(opts: {
+    readonly keepActiveId?: string
+    readonly keepActiveIds?: Iterable<string>
+    readonly maxAgeDays: number
+    readonly dryRun?: boolean
+  }): Promise<PruneStaleReport> {
     const { keepActiveId, dryRun = false } = opts
+    // Every session the host is currently driving is protected, not just the
+    // one that happened to trigger the sweep: with several windows open, the
+    // others are just as live and must not lose their file snapshots.
+    const keep = new Set<string>()
+    if (keepActiveId !== undefined) keep.add(safeSessionId(keepActiveId))
+    if (opts.keepActiveIds !== undefined) {
+      for (const id of opts.keepActiveIds) keep.add(safeSessionId(id))
+    }
     const maxAgeDays = opts.maxAgeDays
     if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0) {
       throw new RangeError('pruneStale: maxAgeDays must be a positive finite number')
@@ -2711,9 +3112,9 @@ export class SnapshotStore {
       if (!st.isDirectory()) continue
       scanned++
 
-      // Active-session guard: never delete the session the caller is driving.
+      // Active-session guard: never delete a session the caller is driving.
       const { size, lastActiveMs } = await dirSizeAndLastActive(full)
-      if (keepActiveId !== undefined && safeSessionId(keepActiveId) === name) {
+      if (keep.has(name)) {
         skippedActive++
         remainingBytes += size
         continue
@@ -2779,9 +3180,17 @@ export class SnapshotStore {
     probe: DiskProbe = defaultProbe,
   ): Promise<UncoveredPath[]> {
     const sizeOf = probe.size?.bind(probe)
-    if (this.maxFileBytes <= 0 || sizeOf === undefined) return []
     const uncovered: UncoveredPath[] = []
+    const seen = new Set<string>()
+    // Paths the capture policy refused: never backed up, so a preview must say
+    // so explicitly instead of implying the restore covers them.
+    for (const [path, exclusion] of this.policySkips.get(sessionId) ?? []) {
+      uncovered.push({ path, reason: 'excluded', exclusion })
+      seen.add(path)
+    }
+    if (this.maxFileBytes <= 0 || sizeOf === undefined) return uncovered
     for (const path of await this.trackedPaths(sessionId)) {
+      if (seen.has(path)) continue
       const size = await sizeOf(path)
       // Unknown size (deleted/unreadable): nothing to report.
       if (this.isOverFileCap(size)) uncovered.push({ path, ...(size !== undefined ? { size } : {}) })
@@ -2972,6 +3381,34 @@ export class SnapshotStore {
   }
 
   /**
+   * Highest anchor group evicted by the retention horizon, or `0` when the
+   * session never pruned. A rewind target at or below it can no longer restore
+   * files; a missing marker is `0` (unknown means "assume no horizon", the
+   * conservative direction: never advertise a loss that was not recorded).
+   */
+  async readPrunedThrough(sessionId: string): Promise<number> {
+    try {
+      const raw = await readFile(join(this.sessionDir(sessionId), SnapshotStore.PRUNED_FILE), 'utf8')
+      const parsed = Number(raw.trim())
+      return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0
+    } catch {
+      return 0
+    }
+  }
+
+  /** Advance the eviction watermark; never moves it backwards. */
+  private async markPrunedThrough(sessionId: string, seq: number): Promise<void> {
+    const prior = await this.readPrunedThrough(sessionId)
+    if (seq <= prior) return
+    const dir = this.sessionDir(sessionId)
+    await mkdir(dir, { recursive: true })
+    const file = join(dir, SnapshotStore.PRUNED_FILE)
+    const tmp = `${file}.tmp`
+    await writeFile(tmp, `${seq}`, 'utf8')
+    await rename(tmp, file)
+  }
+
+  /**
    * Stamp the store-format marker (atomically, like `format`). Written
    * alongside every byte-format entry, so a session that only ever holds the
    * released string format keeps no marker and is read as v1.
@@ -3091,6 +3528,12 @@ export async function reconcileTracked(
       // content comparison so its bytes are not read at all. A path first seen
       // over the cap is simply never tracked, so it can never be mis-restored.
       if (store.isOverFileCap(await probe.size?.(path))) continue
+      // The capture policy is the single gate: a path the store refuses (media,
+      // build output, a browser profile, an unrecognized binary) has no
+      // restorable history by design, so the boundary re-check must not quietly
+      // "heal" it back into the store. The refusal is remembered for previews.
+      const decision = await store.shouldSnapshot(sessionId, path)
+      if (!decision.ok) continue
       const last = await store.lastKnownContent(sessionId, path)
       // The last recorded state was "absent": only a path that is PRESENT now is
       // a change. Without this check every message re-recorded an absent path,

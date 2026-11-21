@@ -146,7 +146,12 @@ export async function saveLastSweepAt(path: string, ms: number): Promise<void> {
 
 /** The slice of a store `runAutoCleanupCheck` needs (pruneStale). */
 export interface AutoCleanupPruner {
-  pruneStale(opts: { keepActiveId?: string; maxAgeDays: number; dryRun?: boolean }): Promise<unknown>
+  pruneStale(opts: {
+    keepActiveId?: string
+    keepActiveIds?: Iterable<string>
+    maxAgeDays: number
+    dryRun?: boolean
+  }): Promise<unknown>
 }
 
 /**
@@ -182,6 +187,8 @@ export async function runAutoCleanupCheck(
     intervalMs?: number
     /** Optional mount lifecycle signal; absent means "never cancelled". */
     signal?: AbortSignal
+    /** Every session this mount has seen activity from. */
+    keepActiveIds?: Iterable<string>
   },
   sessionId: string | undefined,
 ): Promise<void> {
@@ -195,7 +202,11 @@ export async function runAutoCleanupCheck(
     if (isAborted(deps.signal)) return
     if (!shouldRunAutoSweep(await loadLastSweepAt(deps.statePath), Date.now(), deps.intervalMs)) return
     if (isAborted(deps.signal)) return
-    await deps.pruner.pruneStale({ keepActiveId: sessionId, maxAgeDays: loaded.config.maxAgeDays })
+    await deps.pruner.pruneStale({
+      ...(sessionId === undefined ? {} : { keepActiveId: sessionId }),
+      ...(deps.keepActiveIds === undefined ? {} : { keepActiveIds: deps.keepActiveIds }),
+      maxAgeDays: loaded.config.maxAgeDays,
+    })
     // Re-anchoring after an unload would claim a sweep that a fresh mount then
     // skips for a full cadence, so the window only moves while the mount is alive.
     if (isAborted(deps.signal)) return

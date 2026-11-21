@@ -160,7 +160,7 @@ async function repoint(dir: string, decoyName?: string): Promise<{ outside: stri
   const outside = join(root, 'outside', moved.slice(root.length).replace(/[^a-zA-Z0-9]+/g, '_'))
   await mkdir(outside, { recursive: true })
   if (decoyName !== undefined) await writeFile(join(outside, decoyName), 'decoy', 'utf8')
-  await symlink(outside, dir, 'dir')
+  await symlink(outside, dir, process.platform === 'win32' ? 'junction' : 'dir')
   return { outside, moved }
 }
 
@@ -203,7 +203,7 @@ describe('repointed ancestor directory', () => {
     await mkdir(real, { recursive: true })
     await writeFile(join(real, 'f.txt'), 'before', 'utf8')
     const link = join(root, 'ws', 'linked')
-    await symlink(real, link, 'dir')
+    await symlink(real, link, process.platform === 'win32' ? 'junction' : 'dir')
     const live = join(link, 'f.txt')
 
     await captureAndRecord('s1', 5, live)
@@ -232,7 +232,7 @@ describe('repointed ancestor directory', () => {
     const outside = join(root, 'outside-created')
     await mkdir(outside, { recursive: true })
     await writeFile(join(outside, 'f.txt'), 'decoy', 'utf8')
-    await symlink(outside, dirname(live), 'dir')
+    await symlink(outside, dirname(live), process.platform === 'win32' ? 'junction' : 'dir')
 
     const outcome = await store.restoreAfter(session, 5, unlink)
     expect(outcome.skipped).toEqual([live])

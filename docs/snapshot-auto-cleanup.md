@@ -65,15 +65,16 @@ cannot restore files whose snapshots are gone.
 
 ## Active-session protection
 
-Automatic cleanup and `run` always pass the current session as `keepActiveId`: it is counted
-as skipped (reported as `(N active session(s) skipped.)`) and never removed, even when older
-than the cutoff. Other live sessions protect themselves through their own write activity.
+Automatic cleanup and `run` pass every session the plugin is currently driving (plus the one
+that triggered the check) as `keepActiveIds`: they are counted as skipped (reported as
+`(N active session(s) skipped.)`) and never removed, even when older than the cutoff. A
+long-lived mount re-consults the policy at most once an hour instead of never again.
 
 ## State file and throttling
 
 When enabled, the automatic sweep runs in the background after the **first session activity
-of a mount** (a user message or a tool result): one check per mount, at most once per
-`autoSweepIntervalMs` (default 24 hours; `AUTO_SWEEP_INTERVAL_MS` in
+of a mount** (a user message or a tool result), and again after each hour of continued
+activity: at most once per `autoSweepIntervalMs` (default 24 hours; `AUTO_SWEEP_INTERVAL_MS` in
 [`src/snapshot-cleanup.ts`](../src/snapshot-cleanup.ts)). The last-sweep time is persisted
 atomically to `<dsh home>/snapshot-cleanup-last-sweep.json` as `{"lastSweepAt": <epoch ms>}`,
 so a host restart cannot make the sweep run early; a missing or corrupt file reads as

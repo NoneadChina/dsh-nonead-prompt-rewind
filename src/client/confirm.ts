@@ -349,6 +349,15 @@ function renderImpact(impact: HTMLElement, outcome: PreviewOutcome, t: Translate
   const restores = outcome.files.filter(file => file.action === 'restore').map(file => file.path)
   const deletes = outcome.files.filter(file => file.action === 'delete').map(file => file.path)
   const uncovered = outcome.uncovered ?? []
+  if (outcome.filesUnavailable === true) {
+    // The before-images are gone: say so up front, so an empty file list is not
+    // mistaken for "nothing changes on disk".
+    impact.textContent = t('popover.impact.unavailable')
+    const notes: HTMLElement[] = [el('div', CLASS.popoverNote, t('popover.impact.unavailableNote'))]
+    if (outcome.backupOff) notes.push(el('div', CLASS.popoverNote, t('popover.backupDisabled')))
+    for (const note of notes) impact.append(note)
+    return
+  }
   if (restores.length === 0 && deletes.length === 0) {
     // No planned action is NOT the same as "nothing to restore": a recorded
     // path over the backup cap has no restorable state at all.

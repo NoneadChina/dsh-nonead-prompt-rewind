@@ -552,7 +552,7 @@ describe('reconcileTracked (user-message boundary re-check)', () => {
   it('records a non-UTF-8 file byte-exactly instead of as absent', async () => {
     // A decode failure must never become `before: null` (a later rewind would
     // DELETE the file); the boundary stages the CURRENT bytes instead.
-    const file = await touch('binary.bin', 'original')
+    const file = await touch('legacy.gbk', 'original')
     await store.recordEntry(session, { callId: 'tool', anchorSeq: 5, path: file, before: 'original' })
     const gbk = Buffer.from([0xd6, 0xd0, 0xce, 0xc4]) // GBK "中文"
     await writeFile(file, gbk)
@@ -1012,7 +1012,7 @@ describe('pruneStale', () => {
     await mkdir(outside, { recursive: true })
     await writeFile(join(outside, 'secret.txt'), 's', 'utf8')
     try {
-      await symlink(outside, join(root, 'link'), 'dir')
+      await symlink(outside, join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
       await seedSession('real', '1', 'a', '{}', now() - 40 * day)
       const rep = await store.pruneStale({ maxAgeDays: 30 })
       expect(rep.scanned).toBe(1) // 'link' is a symlink => not a directory => skipped

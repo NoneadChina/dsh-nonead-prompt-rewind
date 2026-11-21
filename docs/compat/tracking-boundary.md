@@ -63,7 +63,9 @@ never entered the tracked set. See limitation 1.
 
 A single regular file larger than **8 MiB** (the `maxFileBytes` config field; `0` disables the
 cap) is not backed up. The capture path refuses it **before** reading the bytes, and the
-message-boundary re-check skips it before comparing content. The refusal is a declared
+message-boundary re-check skips it before comparing content. The automatic first-sight scan uses a
+lower **1 MiB** cap (`DEFAULT_SCAN_MAX_FILE_BYTES`) because it has no user intent behind it.
+The refusal is a declared
 limitation, not a delta scheme: this plugin is a lightweight conversation-scoped undo, not a
 backup system, and copying a very large file on every edit is what grows the store without
 bound and saturates disk IO. The cap has a second, safety-side effect: because a record only
@@ -72,7 +74,20 @@ predates untracked edits. The restore planner therefore **refuses** such a path 
 in the result instead of writing older, smaller content over the larger live file. If the file
 is currently over the cap, **no** rewind touches it.
 
-### 2.3 Subagent sessions
+### 2.3 Files the capture policy excludes
+
+Temporary/render directories (`.dsh-tmp`, `.dsh`, browser profiles, `renders`, `temp`, …),
+media/binary extensions (PNG, video, archives, databases, model weights, …), and — unless
+`snapshotBinaries` is on — files whose first 8 KiB contain a NUL byte are never staged. The
+refusal is remembered for the session, so a rewind preview reports the path as **not covered**
+instead of implying a complete restore. `snapshotIncludeGlobs` can force a path back in;
+`snapshotExcludeGlobs` adds more refusals. Byte budgets (256 MiB per session / 2 GiB per store by
+default) may additionally evict old anchor groups, which narrows how far back a file restore can
+reach without changing the conversation rewind itself. A retention horizon (`retentionDays`,
+default 7, always keeping the newest 30 groups) evicts by age as well; a target older than what was
+evicted reports the file half as unavailable and rewinds only the conversation.
+
+### 2.4 Subagent sessions
 
 A subagent runs its own session, and that session is never a rewind target: the host refuses
 generic session RPCs for a subagent-owned identity, so a backup recorded under a child session
@@ -82,7 +97,7 @@ every skip site: before-capture, the boundary re-check, the `agent/created` reco
 lazy cleanup trigger. The parent session's own view of the work (the subagent tool call and its
 result) still rewinds with the parent.
 
-### 2.4 Symlinks, hard links, and moved parents
+### 2.5 Symlinks, hard links, and moved parents
 
 A path whose **final component** is a symlink or a hard link (`lstat().nlink > 1`) is never
 planned and never written through — it is reported as skipped. A symlink would redirect the
@@ -96,7 +111,7 @@ never a false skip. A repointed or moved ancestor is therefore covered too: the 
 skipped, never written into a guessed location, and a missing parent chain is recreated only
 while the nearest surviving ancestor still resolves inside the pinned location.
 
-### 2.5 Paths outside the record, and legacy lossy records
+### 2.6 Paths outside the record, and legacy lossy records
 
 The restore is not a workspace scan: it reads no directory listing, follows no wildcard, and
 infers no path. The action set is exactly the recorded display paths that the planner

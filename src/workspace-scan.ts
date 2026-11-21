@@ -28,31 +28,17 @@
 
 import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { DEFAULT_EXCLUDED_DIRS } from './snapshot-policy.ts'
 
-/** Directory names pruned from the walk (matched case-insensitively). */
-export const DEFAULT_SCAN_EXCLUDED_DIRS: readonly string[] = [
-  'node_modules',
-  '.git',
-  '.svn',
-  '.hg',
-  'dist',
-  'build',
-  'out',
-  'target',
-  'coverage',
-  '.next',
-  '.nuxt',
-  '.turbo',
-  '.cache',
-  '.venv',
-  'venv',
-  '__pycache__',
-  '.pytest_cache',
-  '.mypy_cache',
-  'vendor',
-  '.idea',
-  '.vscode',
-]
+/**
+ * Directory names pruned from the walk (matched case-insensitively).
+ *
+ * Shared with the capture policy so the scan never descends into a subtree the
+ * policy would reject file-by-file anyway: without this, a single
+ * `.dsh-tmp/edge-profile` tree can consume the whole file budget before the
+ * walk reaches real source.
+ */
+export const DEFAULT_SCAN_EXCLUDED_DIRS: readonly string[] = DEFAULT_EXCLUDED_DIRS
 
 /** Byte-size ceiling for the whole walk: keeps a tool call responsive. */
 export const DEFAULT_SCAN_MAX_FILES = 5000

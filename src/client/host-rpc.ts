@@ -39,6 +39,8 @@ export type PreviewOutcome =
       /** Absent on a host that predates the `uncovered` report. */
       readonly uncovered?: readonly PreviewUncoveredPath[]
       readonly backupOff: boolean
+      /** The target predates the retained file history (hosts newer than 0.5.x). */
+      readonly filesUnavailable?: boolean
     }
   | { readonly kind: 'error'; readonly text: string }
   | null
@@ -109,6 +111,7 @@ export async function previewOverRpc(
       // reason to reject an otherwise valid impact list.
       uncovered: Array.isArray(value['uncovered']) ? value['uncovered'].filter(isUncovered) : [],
       backupOff: value['backupOff'],
+      filesUnavailable: value['filesUnavailable'] === true,
     }
   } catch (error) {
     if (isAbort(error)) {

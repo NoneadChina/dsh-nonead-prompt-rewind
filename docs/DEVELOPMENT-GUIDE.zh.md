@@ -578,6 +578,7 @@ store.recordBackup(sessionId, {callId, anchorSeq, path}, backup)
 | --- | --- | --- |
 | 单文件备份 | `DEFAULT_MAX_FILE_BYTES = 8 MiB`（`maxFileBytes`，`0` 关闭） | 超限不备份、不记录；还原侧也拒绝写回 |
 | 每会话锚点组 | `MAX_ANCHOR_GROUPS = 100`（`maxAnchorGroups`） | `prune` 逐出最旧组 |
+| 保留地平线 | `DEFAULT_RETENTION_DAYS = 7`（`retentionDays`，`0` 关闭） | 逐出早于窗口的组，但至少保留最新 `DEFAULT_MIN_ANCHOR_GROUPS = 30` 组；水位写入 `pruned`，更早目标只回退对话 |
 | 暂存捕获 | 24h | `prune` 收集 `.pending/` 里的过期残留 |
 | 终态 journal | 保留到下次 `prune` | `pruneTerminalJournals` 回收 journal 与 `rescue/<opId>/` |
 | 非终态 journal | 不回收 | 其引用的锚点组被 **pin**，因此窗口可暂时超过 100 |
@@ -711,6 +712,7 @@ workspaceKeyFromRegistry(sessionId, workspaces)
 | `dedup` | `true` | 相同 before 内容存 link |
 | `maxFileBytes` | `8388608`（8 MiB） | 单文件备份上限，`0` = 不限 |
 | `maxAnchorGroups` | `100` | 每会话保留的最新锚点组 |
+| `retentionDays` | `7` | 保留地平线：早于窗口的组逐出，但至少保留最新 30 组；`0` = 关闭 |
 | `autoSweepIntervalMs` | `86400000` | 自动清扫节流窗口 |
 | `fileCheckpointingEnabled` | `true`（volatile） | 新备份开关 |
 | `autoCleanupEnabled` | `true`（volatile） | 自动清扫开关 |

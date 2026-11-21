@@ -96,6 +96,13 @@ hides the `[target, marker]` span from the rendered transcript.
   the `snapshotDir` config overrides the whole path. The plugin reads no
   environment variable of its own. Deleting the root only removes file backups
   and the store rebuilds from scratch.
+- **Capture scope**: only regular files are ever staged. The default policy
+  refuses temporary/render directories (`.dsh-tmp`, `.dsh`, browser profiles,
+  `renders`, `temp`, …), media/binary extensions, and files whose first 8 KiB
+  contain a NUL byte (`snapshotBinaries` opts back into the sniff only); every
+  refusal is remembered so a rewind preview reports the path as not covered
+  instead of implying a complete restore. Byte budgets (per file, per session,
+  and whole store) bound how much a runaway write burst can retain.
 - **Path sanitization**: session ids and call ids are scrubbed to
   `[a-zA-Z0-9._-]` (`safeSessionId` / `safeFileId`) before joining the store
   root; `.` and `..` bare values are replaced — hostile ids cannot traverse
