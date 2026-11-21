@@ -312,6 +312,12 @@ export const STYLE = `
   font-size: 12px;
   color: var(--dsw-alias-label-secondary);
 }
+.dsh-rewind-history-caption {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-tertiary);
+}
 .dsh-rewind-history-actions {
   display: flex;
   flex: none;

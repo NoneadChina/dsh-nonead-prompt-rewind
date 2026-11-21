@@ -459,6 +459,7 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
   const undoableCount = entries.filter(
     entry => entry.sessionId === sessionId && entry.undoable && entry.undoneAt === undefined && entry.opId === tailOpId,
   ).length
+  const undoneCount = entries.filter(entry => entry.undoneAt !== undefined).length
 
   return (
     <div className="dsh-rewind-history">
@@ -509,10 +510,20 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
                           {undoableCount}
                         </span>
                       )}
+                  {undoneCount === 0
+                    ? null
+                    : (
+                        <span className="dsh-rewind-history-meta">
+                          {t('settings.history.undoneCount')}
+                          {' · '}
+                          {undoneCount}
+                        </span>
+                      )}
                 </>
               )
             : '\u00a0'}
         </p>
+        <p className="dsh-rewind-history-caption">{t('settings.history.undoHint')}</p>
       </div>
 
       <section className="dsh-rewind-history-card">
