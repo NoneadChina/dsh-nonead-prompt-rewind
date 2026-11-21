@@ -203,7 +203,10 @@ restarted.
 Undo also restores the conversation: the journal carries the user/assistant text messages the
 rewind shadowed, and a successful file rollback republishes them as new events. The surface has
 no inverse of `replace`, so the original nodes stay shadowed and the log keeps both copies; tool
-calls/results, reasoning and usage are not replayed. A rewind that shadowed only dialogue writes
+calls/results, reasoning and usage are not replayed. Each republished answer is mounted in its
+own synthetic turn (`turn/start` + `step/start` + `assistant/message` + `step/end` + `turn/end`),
+because the chat view only renders an assistant message inside a step that started. A rewind
+that shadowed only dialogue writes
 a journal with no file actions, so a conversation-only rewind is undoable once as well.
 ## 6. History and the Settings page
 History is an audit trail, never a restore source:

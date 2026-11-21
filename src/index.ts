@@ -767,7 +767,8 @@ function formatBytes(bytes: number): string {
  * are kept: tool calls/results belong to the discarded future and replaying
  * them would fabricate tool state the session never observed.
  */
-export function collectDialog(session: Session, seqs: readonly number[]): RestoreDialogItem[] {  const items: RestoreDialogItem[] = []
+export function collectDialog(session: Session, seqs: readonly number[]): RestoreDialogItem[] {
+  const items: RestoreDialogItem[] = []
   for (const seq of seqs) {
     const event = session.eventAt(seq as SessionSeq)
     if (event === undefined) continue
@@ -793,9 +794,16 @@ export function collectDialog(session: Session, seqs: readonly number[]): Restor
  * Republish preserved messages after an undo. They are NEW events (the log is
  * append-only; the shadowed originals stay shadowed), so the visible dialogue
  * returns but the original event identities do not.
+ *
+ * The chat view only materializes an assistant message inside a turn/step that
+ * actually started (`turn/start` + `step/start`), so a bare `assistant/message`
+ * would be written to the log but never shown. Each replayed answer therefore
+ * opens a fresh synthetic turn with one step and closes it immediately; the
+ * turn number follows the highest one already in the log.
  */
 export function replayDialog(session: Session, dialog: readonly RestoreDialogItem[]): number {
   let replayed = 0
+  let turn = nextTurnNumber(session)
   for (const item of dialog) {
     const content = item.content as ContentBlock[]
     if (item.role === 'user') {
@@ -805,11 +813,26 @@ export function replayDialog(session: Session, dialog: readonly RestoreDialogIte
         content,
         source: { provider: 'dsh-rewind', model: 'restored-dialog' },
       })
-      session.append('assistant/message', { turn: 0, step: 0, message, stream: [] }, { surfaceOp: 'append' })
+      session.append('turn/start', { turn })
+      session.append('step/start', { turn, step: 1 })
+      session.append('assistant/message', { turn, step: 1, message, stream: [] }, { surfaceOp: 'append' })
+      session.append('step/end', { turn, step: 1 })
+      session.append('turn/end', { turn, reason: { kind: 'completed' } })
+      turn += 1
     }
     replayed += 1
   }
   return replayed
+}
+
+/** Highest turn number present in the log, plus one. */
+function nextTurnNumber(session: Session): number {
+  let highest = 0
+  for (const event of session.snapshotEvents()) {
+    const turn = (event.data as { turn?: unknown } | undefined)?.turn
+    if (typeof turn === 'number' && Number.isSafeInteger(turn) && turn > highest) highest = turn
+  }
+  return highest + 1
 }
 
 /** Resolve a raw target token into a plan, mapping failures to messages. */

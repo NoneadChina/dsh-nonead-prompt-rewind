@@ -252,8 +252,11 @@ shadowed, captured from the shadowed seqs. Undo republishes them as **new events
 (`surfaceOp: 'append'`) after the file rollback succeeds — the surface has no inverse of
 `replace`, so the original nodes stay shadowed forever and the log keeps both copies.
 Only human user messages and assistant `text` blocks are kept; tool calls/results,
-reasoning, usage and stream data are not replayed, and the republished assistant events
-use `turn: 0, step: 0`. A rewind that only shadowed dialogue (no file actions) still
+reasoning, usage and stream data are not replayed. The chat view only materializes an
+assistant message inside a step that actually started, so each republished answer opens
+its own synthetic turn (`turn/start` + `step/start`, then the message, `step/end` and
+`turn/end`); the turn number is the highest one already in the log plus one. A rewind
+that only shadowed dialogue (no file actions) still
 writes a journal with `actions: []` plus `dialog`, so a conversation-only rewind can be
 undone exactly once. A journal without `dialog` (legacy) remains file-only.
 ## 9. Rewind history partition

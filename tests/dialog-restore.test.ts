@@ -73,6 +73,29 @@ describe('dialog replay', () => {
     // The replay does not resurrect the original events: seqs are new, so the
     // surface has more nodes than the pre-rewind cut retained.
     expect(session.surface.nodes.length).toBeGreaterThan(plan.shadowedSeqs.length)
+
+    // The chat view only shows an assistant message inside a step that really
+    // started, so every replayed answer must sit in its own synthetic turn.
+    const replayed = session.snapshotEvents().filter(
+      event =>
+        event.type === 'assistant/message' &&
+        (event.data as { message?: { source?: { provider?: unknown } } }).message?.source?.provider === 'dsh-rewind',
+    )
+    expect(replayed).toHaveLength(2)
+    for (const event of replayed) {
+      const data = event.data as { turn: number; step: number }
+      expect(data.turn).toBeGreaterThan(0)
+      expect(
+        session
+          .snapshotEvents()
+          .some(
+            other =>
+              other.type === 'step/start' &&
+              (other.data as { turn?: number }).turn === data.turn &&
+              (other.data as { step?: number }).step === data.step,
+          ),
+      ).toBe(true)
+    }
   })
 
   it('keeps a journal for a conversation-only restore and undoes it', async () => {
