@@ -6,6 +6,60 @@ and the release steps are documented in
 
 <!-- Release notes for v0.15.0 and earlier live in the GitHub Releases. -->
 
+## [0.6.0] - 2026-11-21
+
+> 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
+
+### 新增功能
+
+- **撤销会把回退掉的对话也送回来**：每次回退记录被遮蔽的用户与助手消息，撤销时按原序重新追加（新事件、原事件保持被遮蔽）；文件没有改动的纯对话回退同样可撤销。
+- **快照采集默认只收源码与文本**：跳过 `.dsh-tmp`、构建/渲染目录、浏览器 profile，以及媒体、压缩包、模型、可执行文件等后缀；首见扫描的单文件阈值 1 MiB，工具写入前仍为 8 MiB，可用 `snapshotBinaries` 放开二进制。
+- **快照有了字节预算**：每会话 256 MiB、全库 2 GiB，超出后按最旧优先逐出到 80%；仍在保留窗口内的会话与撤销记录不会被逐出。
+- **新增回退地平线**：每会话保留最近 7 天或最新 30 组，更早目标只回退对话并在预览里标明文件不可用；有效窗口自动取「地平线天数」与「不活跃时间」的较大值。
+- **快照存储升级到 v3**：`objects/<sha256>` 全局对象池让跨会话相同字节共享一份，可压缩文本用 brotli 打包；新增 `/snapshot-auto-cleanup migrate` 与 `gc`（默认预演）。
+
+### 问题修复
+
+- **撤销记录不再被后台清理误删**：每个会话保留最新一份已完成回退日志，直到被使用或被新的回退取代；此前下一次写入触发清理后，一秒前的回退就无法撤销。
+- **预算逐出不再让撤销误报「回退后已改动」**：撤销按回退前内容的 SHA-256 指纹判定，指纹齐全的回退不再依赖被逐出的旧快照；部分失败的撤销可以直接重试。
+- **清空会话后不再把「快照已过期」显示成「无文件」**：删除会话快照时留下墓碑，预览与撤销据此给出明确原因。
+
+### 体验优化
+
+- **「回退历史」页更如实地展示状态**：每行标出「可撤销」或「已被更新的回退取代」，失败提示改为错误样式并带 live region，首屏用骨架占位并补上空态引导。
+
+### 其他变更
+
+- **自动清理不再只跑一次**：由每个挂载只检查一次改为每小时复审，并在超出预算时立即触发；活动会话保护从一个会话扩展到所有在驱动会话。
+
+---
+
+> DSH `>=0.2.1-0 <0.3.1-0` supported. Internal alpha.
+
+### New Features
+
+- **Undo now brings the rewound conversation back too**: each rewind records the shadowed user and assistant messages, and undo re-appends them in order as new events (the originals stay shadowed); a conversation-only rewind with no file work is undoable as well.
+- **Capture defaults to source and text**: `.dsh-tmp`, build/render directories, browser profiles, and media, archive, model and executable extensions are skipped; the first-seen scan caps a file at 1 MiB while tool writes keep the 8 MiB cap, and `snapshotBinaries` opts back into binary files.
+- **Snapshots have byte budgets**: 256 MiB per session and 2 GiB per store, evicting oldest-first down to 80%; sessions still inside the retention window and undo records are never evicted.
+- **A retention horizon was added**: each session keeps the last 7 days or the newest 30 anchor groups; older targets rewind the conversation only and the preview marks their files unavailable. The effective window is the larger of the horizon and the inactivity limit.
+- **Snapshot storage moved to v3**: a store-wide `objects/<sha256>` pool shares identical bytes across sessions and compressible text is brotli-packed; `/snapshot-auto-cleanup migrate` and `gc` were added (dry-run by default).
+
+### Bug Fixes
+
+- **The undo record is no longer reclaimed by background pruning**: each session keeps its newest completed restore journal until it is used or superseded; previously the next write's cleanup made a rewind that was seconds old impossible to undo.
+- **Budget eviction no longer makes undo report "changed after the rewind"**: undo compares a SHA-256 fingerprint of the restored bytes, so fingerprinted rewinds no longer depend on evicted snapshots, and a partially applied undo can be retried directly.
+- **Clearing a session no longer shows "expired snapshots" as "no files"**: deleting a session's snapshots leaves a tombstone, which the preview and undo report as an explicit reason.
+
+### Improvements
+
+- **The rewind history page now shows status honestly**: each row is marked undoable or superseded by a newer rewind, failures use the error style with a live region, and the first paint uses skeletons with empty-state guidance.
+
+### Chores
+
+- **Automatic cleanup no longer runs once per mount**: it re-checks hourly and fires immediately when a budget is exceeded, and active-session protection covers every driving session instead of one.
+
+**Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.5.5...v0.6.0
+
 ## [0.5.5] - 2026-11-19
 
 > 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
