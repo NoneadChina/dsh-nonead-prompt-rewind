@@ -124,7 +124,10 @@ Semantics a reader may rely on:
   `pruned` is non-numeric beside numbered anchor directories, so it is never read as an entry or a
   group; a missing or unparsable file means `0` ("never pruned"). A target below the watermark
   cannot restore files: preview reports `filesUnavailable` and the rewind skips the restore pass
-  rather than applying an empty plan.
+  rather than applying an empty plan. The effective horizon is
+  `max(retentionDays, cleanup maxAgeDays)`: the byte budgets and the age sweep share one window, so
+  a snapshot the inactivity policy promises to keep is never evicted early by the configured
+  horizon (when the cleanup window is shorter, `retentionDays` still applies).
 - **`blob: null` means the call created the file.** It is valid only with `size: 0` and never together with `lossy`; a contradiction is corruption,
   because guessing an entry's kind is how a restore turns into a delete.
 - **`anchorSeq` is the parent directory**, deliberately not a field. Rewinding to message N applies every entry anchored at or after N — the boundary

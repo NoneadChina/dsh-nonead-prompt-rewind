@@ -300,6 +300,13 @@ function readHostLocale(ctx: Context): HostLocaleId {
  */
 let cleanupStore: CleanupConfigStore | undefined
 
+/**
+ * The store mounted by the last `apply`, used by the module-level cleanup
+ * policy helpers to keep the effective retention horizon in sync with the
+ * inactivity window. `undefined` before the first mount.
+ */
+let activeStore: SnapshotStore | undefined
+
 /** Render one host dictionary key in the active locale. */
 function t(key: HostKey, params?: Record<string, string | number>): string {
   return translate(activeLocale, key, params)
@@ -1739,13 +1746,19 @@ async function readCleanupPolicy(): Promise<{ ok: true; config: CleanupConfig } 
   if (cleanupStore === undefined) {
     return { ok: false, error: 'cleanup policy unavailable; snapshot cleanup policy cannot be read' }
   }
-  return { ok: true, config: cleanupStore.load() }
+  const config = cleanupStore.load()
+  // One window for both promises: the age sweep deletes only past `maxAgeDays`,
+  // and the byte budgets must not evict anything inside that same window. The
+  // effective horizon is therefore `max(retentionDays, maxAgeDays)`.
+  activeStore?.setCleanupWindowDays(config.maxAgeDays)
+  return { ok: true, config }
 }
 
 /** Persist a validated cleanup policy through the config-backed store. */
 async function writeCleanupPolicy(next: CleanupConfig): Promise<void> {
   if (cleanupStore === undefined) throw new Error('cleanup policy unavailable; snapshot cleanup policy cannot be written')
   await cleanupStore.save(next)
+  activeStore?.setCleanupWindowDays(next.maxAgeDays)
 }
 
 /** Render a {@link PruneStaleReport} for the `run` sub-command (dry vs apply). */
@@ -2006,6 +2019,7 @@ export function apply(ctx: Context, config?: Config): void {
   // so the command descriptions registered below carry the user's language.
   activeLocale = readHostLocale(ctx)
   cleanupStore = undefined
+  activeStore = undefined
   lastAutoCleanupCheckAt = 0
   // Cancels this mount's in-flight background work when the fiber disposes: the
   // live plugin manager can unload the plugin at any moment, and neither async
@@ -2031,6 +2045,7 @@ export function apply(ctx: Context, config?: Config): void {
     excludeGlobs: config?.snapshotExcludeGlobs,
     includeGlobs: config?.snapshotIncludeGlobs,
   })
+  activeStore = store
   // ---- rewind history (audit trail, never a restore source) ----
   // Root: alongside an explicit snapshot root, else `<dsh home>/rewind-history`.
   // `historyEnabled` / `historyLimit` / `historyPreview` stay live references,
@@ -2073,6 +2088,9 @@ export function apply(ctx: Context, config?: Config): void {
       clear: (id, fields) => ctx.settings.mutate(id, fields.map(field => ({ op: 'unset' as const, path: [field] }))),
     }
     cleanupStore = volatileCleanupStore(config, writer)
+    // Couple the effective retention horizon to the configured inactivity
+    // window at mount; later policy reads and writes keep them in sync.
+    store.setCleanupWindowDays(cleanupStore.load().maxAgeDays)
   }
   // Pending before-captures keyed by agent id + callId (callIds are unique,
   // but scoping by agent makes cross-session collisions impossible).

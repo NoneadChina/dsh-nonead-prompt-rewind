@@ -1261,12 +1261,18 @@ export class SnapshotStore {
   private readonly maxAnchorGroups: number
 
   /**
-   * Retention horizon in days for anchor groups; `<= 0` disables it. Groups
-   * older than this are evicted even below {@link maxAnchorGroups}, so a
-   * long-lived session does not keep every historical before-image. A `Config`
-   * field (`retentionDays`).
+   * Configured retention horizon in days, before the cleanup window widens it.
+   * A `Config` field (`retentionDays`).
    */
-  private readonly retentionDays: number
+  private readonly baseRetentionDays: number
+
+  /**
+   * The effective inactivity window from the cleanup policy, in days. Raised
+   * through {@link setCleanupWindowDays} so budget eviction and the age sweep
+   * share one window: a snapshot promised by the inactivity window is never
+   * evicted early by the retention horizon.
+   */
+  private cleanupWindowDays = 0
 
   /**
    * Per-session byte budget for stored before-images; `<= 0` disables it. When
@@ -1371,7 +1377,7 @@ export class SnapshotStore {
     this.dedup = opts?.dedup ?? true
     this.maxFileBytes = opts?.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES
     this.maxAnchorGroups = opts?.maxAnchorGroups ?? MAX_ANCHOR_GROUPS
-    this.retentionDays = opts?.retentionDays ?? DEFAULT_RETENTION_DAYS
+    this.baseRetentionDays = opts?.retentionDays ?? DEFAULT_RETENTION_DAYS
     this.maxSessionBytes = opts?.maxSessionBytes ?? DEFAULT_MAX_SESSION_BYTES
     this.maxTotalBytes = opts?.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES
     this.snapshotBinaries = opts?.snapshotBinaries ?? false
@@ -1386,6 +1392,25 @@ export class SnapshotStore {
     // `~/.dsh`) plus `rewind-snapshots`. No ambient env override: the config
     // field is the one owner of this path.
     this.root = root ?? join(resolveDshHome(opts?.dshHome), SNAPSHOT_DIR_NAME)
+  }
+
+  /**
+   * Effective retention horizon: the configured horizon widened by the cleanup
+   * window. Using one window keeps the age sweep and budget eviction from
+   * disagreeing about how long a snapshot is promised; when the cleanup window
+   * is shorter, the configured (`retentionDays`) horizon still applies.
+   */
+  get retentionDays(): number {
+    return Math.max(this.baseRetentionDays, this.cleanupWindowDays)
+  }
+
+  /**
+   * Widen the effective horizon to the cleanup policy's inactivity window, so
+   * that a snapshot the policy promises to keep is never evicted early by the
+   * byte budgets. Non-finite or non-positive values mean "no window".
+   */
+  setCleanupWindowDays(days: number): void {
+    this.cleanupWindowDays = Number.isFinite(days) && days > 0 ? days : 0
   }
 
   /** Absolute path of one session's snapshot directory (id sanitized). */

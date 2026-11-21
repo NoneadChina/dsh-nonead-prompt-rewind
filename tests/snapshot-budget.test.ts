@@ -163,6 +163,37 @@ describe('clear tombstones', () => {
   })
 })
 
+describe('retention window coupling', () => {
+  it('widens the effective horizon to the cleanup window and never shrinks below the configured one', () => {
+    const store = new SnapshotStore(join(root, 'snap'), { retentionDays: 7 })
+    expect(store.retentionDays).toBe(7)
+    store.setCleanupWindowDays(30)
+    expect(store.retentionDays).toBe(30)
+    store.setCleanupWindowDays(3)
+    expect(store.retentionDays).toBe(7)
+    store.setCleanupWindowDays(Number.NaN)
+    expect(store.retentionDays).toBe(7)
+  })
+
+  it('does not evict a group the cleanup window still promises', async () => {
+    const store = new SnapshotStore(join(root, 'snap'), { retentionDays: 7, maxSessionBytes: 10 })
+    const file = await touch('a.txt', 'a')
+    await store.recordEntry('s1', { callId: 'c1', anchorSeq: 1, path: file, before: 'x'.repeat(500) })
+    // Past the configured 7-day horizon, still inside a 30-day cleanup window.
+    const then = new Date(Date.now() - 10 * 86_400_000)
+    const anchor = join(root, 'snap', 's1', '1')
+    await utimes(anchor, then, then)
+    for (const name of await readdir(anchor)) await utimes(join(anchor, name), then, then)
+
+    store.setCleanupWindowDays(30)
+    await store.recordEntry('s1', { callId: 'c2', anchorSeq: 2, path: file, before: 'y'.repeat(500) })
+
+    // The byte budget is exceeded, but the promised group stays; the newest
+    // group is never evicted either.
+    expect((await readdir(join(root, 'snap', 's1'))).filter(name => /^\d+$/.test(name)).sort()).toEqual(['1', '2'])
+  })
+})
+
 describe('age sweep with several active sessions', () => {
   async function seed(id: string, ageDays: number): Promise<void> {
     const dir = join(root, 'snap', id, '1')
