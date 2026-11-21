@@ -103,6 +103,12 @@ hides the `[target, marker]` span from the rendered transcript.
   refusal is remembered so a rewind preview reports the path as not covered
   instead of implying a complete restore. Byte budgets (per file, per session,
   and whole store) bound how much a runaway write burst can retain.
+- **Store-wide object pool (v3)**: each committed sidecar is additionally
+  hard-linked to `objects/<sha256>` under the store root, so identical captured
+  bytes share one inode across sessions. The pool holds no data the session
+  directories do not already hold, entry reads never depend on it, and garbage
+  collection removes only objects with no remaining sidecar link (`nlink <= 1`).
+  `/snapshot-auto-cleanup migrate|gc` default to a dry run.
 - **Path sanitization**: session ids and call ids are scrubbed to
   `[a-zA-Z0-9._-]` (`safeSessionId` / `safeFileId`) before joining the store
   root; `.` and `..` bare values are replaced — hostile ids cannot traverse

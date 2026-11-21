@@ -104,7 +104,7 @@ describe('a released v1 build cannot act on v2 snapshots', () => {
     for (const file of files) {
       expect(await legacyReadEntry(file), `${relative(store.sessionDir(session), file)} must be unreadable to v1`).toBeUndefined()
       const parsed = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>
-      expect(parsed.store).toBe(2)
+      expect(parsed.store).toBe(CURRENT_STORE_VERSION)
       expect(parsed.file).toBeTypeOf('string')
       // The two v1 key names must never come back (the contract itself).
       expect('path' in parsed).toBe(false)

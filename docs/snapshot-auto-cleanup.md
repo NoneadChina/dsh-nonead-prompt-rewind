@@ -36,7 +36,16 @@ with the command below; the next check or run reads the current value without a 
 /snapshot-auto-cleanup run --apply            execute the age-based sweep
 /snapshot-auto-cleanup run --current          dry-run preview of clearing this session
 /snapshot-auto-cleanup run --current --apply  clear this session's snapshots
+/snapshot-auto-cleanup migrate                dry-run preview of pooling existing snapshots
+/snapshot-auto-cleanup migrate --apply        hard-link existing snapshots into the object pool
+/snapshot-auto-cleanup gc                     dry-run preview of collecting orphaned objects
+/snapshot-auto-cleanup gc --apply             delete objects no sidecar references
 ```
+
+`migrate` retrofits the store-wide `objects/<sha256>` pool (v3) onto snapshots written by
+older builds; it only ever adds hard links, so entries stay readable either way. `gc`
+removes pool objects whose link count dropped to one. Both default to a dry run, and
+neither is part of the automatic age sweep.
 
 Anything else — an unknown subcommand, an unknown `run` flag, a non-positive day count, or
 the retired `run-apply` abbreviation — is rejected with the usage text and changes nothing.

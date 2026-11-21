@@ -53,7 +53,7 @@ import type { ArchiveEvent } from './archive.ts'
 import z from '@deepseek-ai/schemastery'
 import { preferredLocale, translate, type HostKey, type HostLocaleId } from './locales.ts'
 import { listRewindCandidates, parseRewindTarget, planRewind, REWIND_MARKER_SOURCE, RewindError, type RewindPlan } from './rewind.ts'
-import { DEFAULT_MAX_FILE_BYTES, DEFAULT_RETENTION_DAYS, MAX_ANCHOR_GROUPS, reconcileTracked, SnapshotStore, UnknownStoreVersionError, type ClearSessionReport, type FileImpact, type PendingBackup, type PruneStaleReport, type RestoreOutcome, type UncoveredPath } from './snapshot.ts'
+import { DEFAULT_MAX_FILE_BYTES, DEFAULT_RETENTION_DAYS, MAX_ANCHOR_GROUPS, reconcileTracked, SnapshotStore, UnknownStoreVersionError, type ClearSessionReport, type FileImpact, type GcObjectsReport, type MigrateObjectsReport, type PendingBackup, type PruneStaleReport, type RestoreOutcome, type UncoveredPath } from './snapshot.ts'
 import { DEFAULT_MAX_SESSION_BYTES, DEFAULT_MAX_TOTAL_BYTES } from './snapshot-policy.ts'
 import { discoverWorkspaceFiles, DEFAULT_SCAN_MAX_BYTES, DEFAULT_SCAN_MAX_FILES } from './workspace-scan.ts'
 import {
@@ -1752,6 +1752,25 @@ function formatCleanupReport(report: PruneStaleReport): string {
   return report.skippedActive > 0 ? `${text}\n${t('cleanup.skipped', { skipped: report.skippedActive })}` : text
 }
 
+/** Render a {@link MigrateObjectsReport} for the `migrate` sub-command. */
+function formatMigrateReport(report: MigrateObjectsReport): string {
+  const key: HostKey = report.dryRun ? 'cleanup.migrateDry' : 'cleanup.migrateApply'
+  return t(key, {
+    scanned: report.scanned,
+    linked: report.linked,
+    deduped: report.deduped,
+    reclaimed: report.reclaimedBytes,
+    gcDeleted: report.gc?.deleted ?? 0,
+    gcFreed: report.gc?.freedBytes ?? 0,
+  })
+}
+
+/** Render a {@link GcObjectsReport} for the `gc` sub-command (dry vs apply). */
+function formatGcReport(report: GcObjectsReport): string {
+  const key: HostKey = report.dryRun ? 'cleanup.gcDry' : 'cleanup.gcApply'
+  return t(key, { deleted: report.deleted, freed: report.freedBytes })
+}
+
 /**
  * Handle one `/snapshot-auto-cleanup` invocation: view or configure the
  * persistent cleanup policy, or run the sweep now. All writes go through the
@@ -1766,7 +1785,7 @@ async function handleSnapshotCleanup(
   inflight: InflightRewinds,
 ): Promise<CommandResult> {
   const parsed = parseCleanupCommand(invocation.rawInput)
-  if ('error' in parsed) return { kind: 'error', text: t('cleanup.usage') }
+  if ('error' in parsed) return { kind: 'error', text: `${t('cleanup.usage')}\n${t('cleanup.usageAdvanced')}` }
   switch (parsed.action) {
     case 'status': {
       const loaded = await readCleanupPolicy()
@@ -1820,6 +1839,22 @@ async function handleSnapshotCleanup(
         // automatic sweep does not immediately re-run after a manual one.
         if (!report.dryRun) await saveLastSweepAt(resolveCleanupStatePath(dshHome), Date.now())
         return { kind: 'success', text: formatCleanupReport(report) }
+      } catch (error) {
+        return { kind: 'error', text: t('cleanup.runFailed', { detail: error instanceof Error ? error.message : String(error) }) }
+      }
+    }
+    case 'migrate': {
+      try {
+        const report = await store.migrateObjects({ dryRun: !parsed.apply })
+        return { kind: 'success', text: formatMigrateReport(report) }
+      } catch (error) {
+        return { kind: 'error', text: t('cleanup.runFailed', { detail: error instanceof Error ? error.message : String(error) }) }
+      }
+    }
+    case 'gc': {
+      try {
+        const report = await store.gcObjects({ dryRun: !parsed.apply })
+        return { kind: 'success', text: formatGcReport(report) }
       } catch (error) {
         return { kind: 'error', text: t('cleanup.runFailed', { detail: error instanceof Error ? error.message : String(error) }) }
       }

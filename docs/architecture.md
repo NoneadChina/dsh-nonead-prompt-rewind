@@ -153,13 +153,16 @@ session/event        reconcileTracked: at every user-message boundary, re-stat e
                      store disables file restore for that session), reconcileFormatVersion (a
                      different session format clears that session's snapshot directory).
 ```
-Storage is bounded six ways: the capture policy refuses temporary/render directories
+Storage is bounded seven ways: the capture policy refuses temporary/render directories
 (`.dsh-tmp`, `.dsh`, browser profiles, `renders`, `temp`, …), media/binary extensions, and
 (unless `snapshotBinaries` is on) files whose first 8 KiB contain a NUL byte; `snapshotIncludeGlobs`
 overrides both extension and sniff rules, while `snapshotExcludeGlobs` adds more; a regular file
 over the per-file cap (default 8 MiB; `maxFileBytes: 0` disables it) is never backed up, and the
 automatic first-sight scan uses a lower 1 MiB cap; content-identical before-states become dedup
-links instead of second copies; `prune` keeps the newest 100 anchor groups per session and
+links instead of second copies, and every committed sidecar is hard-linked into a store-wide
+`objects/<sha256>` pool so byte-identical captures across sessions share one inode (orphans are
+mark-and-sweep collected; `migrate` retrofits the pool, dry-run by default); `prune` keeps the
+newest 100 anchor groups per session and
 materializes a surviving link pointing into a group being dropped. A retention horizon
 (`retentionDays`, default 7) additionally evicts groups older than it even below the count cap,
 while always keeping the newest 30; the highest evicted sequence is persisted as a per-session

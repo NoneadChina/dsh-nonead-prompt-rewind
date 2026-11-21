@@ -27,8 +27,10 @@ mutation, and the history store starts a fresh partition.
 
 ```text
 <snapshot root>/
+├── objects/
+│   └── <sha256>                             # global content-addressed pool entry (hard link)
 └── <sessionId>/
-    ├── store                                  # plugin store-format marker ("2")
+    ├── store                                  # plugin store-format marker ("3")
     ├── format                                 # DSH session-format marker (session.header.version)
     ├── <anchorSeq>/                           # decimal seq of the anchoring user/message
     │   ├── <callId-base>.json                 # one committed entry (metadata)
@@ -39,6 +41,9 @@ mutation, and the history store starts a fresh partition.
     ├── journal-<opId>.json                    # one restore-op journal (current prefix)
     └── restore-journal-<opId>.json            # the legacy prefix, still readable
 ```
+- `objects/` holds one file per distinct sidecar content, named by the SHA-256 of its bytes. Every committed sidecar is hard-linked here, so identical
+  bytes captured by different sessions (or different turns) share one inode. The pool is a deduplication layer only: an entry always names its own
+  sidecar, so reads and restores never depend on the pool, and a missing object is repaired from the sidecar on the next commit.
 - `<sessionId>` is `safeSessionId(sessionId)`: everything outside `[a-zA-Z0-9._-]` becomes `_`, and the bare values `.` and `..` become `session`, so
   a hostile id cannot traverse out of the root.
 - `<anchorSeq>` is a decimal integer. Readers only accept numeric directories as anchor groups; any other name in the session directory is ignored.
@@ -62,7 +67,7 @@ Two small atomically-written files, both non-`.json`:
 
 | File | Value | Meaning |
 | --- | --- | --- |
-| `store` | decimal integer (`2`) | On-disk format the store writes. Missing means the legacy string format. |
+| `store` | decimal integer (`3`) | On-disk format the store writes. Missing means the legacy string format. |
 | `format` | decimal integer | `session.header.version` at the time snapshots were recorded. |
 
 `store` is stamped once per process per session, alongside the first entry. `format` is
@@ -77,7 +82,7 @@ One JSON file per before-backup, written as `<callId-base>.json` next to its
 
 ```ts
 interface CheckpointEntryJson {
-  store: 2            // on-disk format; absent or 1 = the legacy string format
+  store: 3            // on-disk format; absent or 1 = the legacy string format, 2 = pre-pool
   callId: string      // the tool call that mutated the file
   file: string        // resolved display path (absolute) of the tracked file
   parent?: string     // realpath of dirname(file) at commit time (the location pin)
@@ -126,13 +131,31 @@ Semantics a reader may rely on:
   cannot overwrite a live file.
 - **`time` is the ordering key inside an anchor group.** It is monotonic per store instance (bumped past the previous commit), so same-millisecond
   commits stay capture-ordered and a re-read always selects the same earliest entry per path.
-## 6. Dedup link entry
+## 6. Object pool and garbage collection
+Store version 3 adds the root-level `objects/` pool. It is not part of any entry: writing a
+sidecar also links it to `objects/<sha256>` (temporarily `objects/<sha256>.cas` if the link has
+to be replaced), and readers never look there. Hard links are best-effort — a filesystem that
+refuses them (FAT, some permission setups) simply keeps the per-entry copy, which is why the
+pool is an optimization, not a correctness requirement.
+
+- **Garbage collection** treats an object as garbage when `lstat().nlink <= 1`: no sidecar
+  references it any more. A live object always has at least two links (the pool entry and its
+  sidecar), so a concurrent commit cannot be collected. `clearSession`, `enforceTotalBudget` and
+  a real `pruneStale` sweep run GC at the end; `gcObjects({ dryRun: true })` only reports.
+- **Migration** (`/snapshot-auto-cleanup migrate`, dry-run unless `--apply`) walks every
+  session's anchors, publishes each sidecar into the pool, and replaces a duplicate sidecar with
+  a hard link to the existing object. The report counts scanned/linked/deduped/reclaimed bytes;
+  an applied migration ends with a GC pass. Running it on an already-migrated store is a no-op.
+- **`objects/` is never a session.** It is skipped by `sessionDirs()`, `pruneStale` and the byte
+  budgets; only GC and migration touch it.
+
+## 7. Dedup link entry
 When a tracked file's new before-state is byte-identical to its immediately-prior entry,
 the entry is stored as a link instead of a second copy:
 
 ```ts
 interface LinkEntryJson {
-  store: 2
+  store: 3
   callId: string
   file: string
   ref: string        // "<anchorSeq>/<callId-base>.json" of the immediately-prior entry
@@ -148,7 +171,7 @@ POSIX separators so a journal written on one platform is readable on another). `
 materializes a surviving link whose referent sits in a group it is about to drop, so no
 kept link is left dangling; the materialized entry keeps the bytes and the link's own
 location pin, but not the referent's `mode`.
-## 7. Restore journal
+## 8. Restore journal
 One JSON file per restore operation, written **before the first mutation** and updated as
 the pass applies:
 
@@ -189,7 +212,7 @@ State machine: `running` and `rollback-running` are non-terminal; `completed` an
 journal is corrupt; the journal's own `state` stays non-terminal in both cases. A journal
 read from a legacy-prefix file is rewritten in place (same file) as `version: 2` when a
 redo or rollback completes, so one op never leaves two divergent versions on disk.
-## 8. Rewind history partition
+## 9. Rewind history partition
 History is a separate root with a separate schema and lifetime:
 
 ```text
@@ -248,7 +271,7 @@ Rules:
 - Writes for one partition serialize through a per-path promise chain, so concurrent appends cannot interleave a read-modify-write.
 - An entry is never edited except for the undo bookkeeping fields (`undoneAt`, `undoOutcome`, `undoMode`). `chainPrev` and the
   `HistoryStore.chainTail` / `isChainTail` helpers make the newest not-yet-undone entry of a session the only undoable position.
-## 9. Cleanup state file
+## 10. Cleanup state file
 The snapshot auto-cleanup policy is not a file: it is the plugin entry's own live
 configuration (`autoCleanupEnabled`, `autoCleanupMaxAgeDays`). Only the sweep clock is
 persisted:
@@ -261,7 +284,7 @@ unreadable or corrupt file reads as `0` ("never swept"), so the next activity ru
 sweep — safe because the sweep is idempotent and never targets the active session. The
 write is atomic (temp + rename) and happens only after a real sweep, and only while the
 mount is alive.
-## 10. Write and recovery guarantees
+## 11. Write and recovery guarantees
 - **Atomicity.** Every JSON write serializes to a sibling `<target>.tmp` and renames over the target. A crash leaves only a temp file, never a
   readable half-written target, and readers ignore temp files. A leftover temp is overwritten by the next write of the same target. The marker files
   (`store`, `format`) use the same temp+rename rule.
@@ -277,7 +300,7 @@ mount is alive.
   those directories; it also recycles terminal journals with their `rescue/<opId>/` bytes and collects `.pending/` captures older than 24 h. A group a
   non-terminal journal still references is pinned, so the effective window may exceed the cap until that op is resolved. Non-terminal and corrupt
   journals are always kept.
-## 11. Validation and failure policy
+## 12. Validation and failure policy
 - **Entries** are read defensively. A missing, malformed, or self-contradictory entry is read as `undefined` (skipped): losing one backup is
   acceptable, guessing is not. Contradictions are corruption — `blob: null` with `size !== 0`, `lossy` together with `blob: null`, a `blob` that is
   not this entry's sidecar name, or a malformed legacy record. A malformed `parent` is not corruption: it means "no pin". Two cases are **not** silent
@@ -288,13 +311,14 @@ mount is alive.
 - **Journal IO** is best-effort by design: if a journal cannot be written, the restore proceeds with pre-journal semantics — crash safety degrades,
   behavior does not.
 - **History** is an audit trail. A failed append is reported through the store's warning hook and never fails the rewind that produced it.
-## 12. Versioning policy
+## 13. Versioning policy
 The format is versioned at three levels, and compatibility means *reading old data*, not
 repairing it:
 
 - A session-level `store` marker and a self-describing `store` field on every entry. A missing marker (or `1`) is the legacy string format, which is
-  still read but never migrated. A value **above** the current `CURRENT_STORE_VERSION` (`2`) fails the automatic operations closed: no file restore, no
-  new entry, and no age sweep into a store a newer build owns. The conversation rewind does not depend on snapshots and keeps working.
+  still read but never migrated; entries carrying `2` are read unchanged (the object pool is not part of an entry). A value **above** the current
+  `CURRENT_STORE_VERSION` (`3`) fails the automatic operations closed: no file restore, no new entry, and no age sweep into a store a newer build owns.
+  The conversation rewind does not depend on snapshots and keeps working.
 - **The explicit clear is the one deliberate exception.** `/snapshot-auto-cleanup run --current --apply` is the user's escape hatch for reclaiming
   space, so it may remove a directory a newer build owns; the report names the newer store it deleted (`newerStoreVersion`) so the loss is visible.
   Automatic cleanup (the age sweep) never touches such a directory.
@@ -309,7 +333,7 @@ contract is pinned by `tests/downgrade-safety.test.ts`.
 A future incompatible format should raise the relevant version (readers already fail
 closed above their own) or move the state root and ship an explicit migration tool. Old
 format data is never silently re-interpreted.
-## 13. Format invariants
+## 14. Format invariants
 - Every path a reader follows is either rooted in the store root or explicitly validated as a session-relative, single-level reference.
 - An entry's sidecar is named after the entry, sits beside it, and holds the exact bytes it claims (`size` matches).
 - `anchorSeq` comes from the directory, never from the JSON body.

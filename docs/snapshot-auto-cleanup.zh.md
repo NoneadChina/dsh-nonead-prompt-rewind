@@ -29,7 +29,15 @@
 /snapshot-auto-cleanup run --apply            真正执行按阈值的清理
 /snapshot-auto-cleanup run --current          预演清空本会话快照
 /snapshot-auto-cleanup run --current --apply  真正清空本会话快照
+/snapshot-auto-cleanup migrate                预演把已有快照并入共享对象池
+/snapshot-auto-cleanup migrate --apply        把已有快照硬链接进共享对象池
+/snapshot-auto-cleanup gc                     预演清理孤儿共享对象
+/snapshot-auto-cleanup gc --apply             删除已无 sidecar 引用的对象
 ```
+
+`migrate` 把旧版本写下的快照补进 store 级 `objects/<sha256>` 池（v3），只增加硬链接，
+entry 始终可读；`gc` 删除链接数已降到 1 的池对象。两者默认都只是预演，也不会被自动
+按龄清理隐式触发。
 
 其他输入——未知子命令、未知 `run` 选项、非正的天数，以及已移除的 `run-apply` 缩写——都会返回用法说明且不做任何改动。`run` 不要求先开启 `autoCleanupEnabled`：手动清理只读取阈值。
 

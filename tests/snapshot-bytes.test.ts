@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { defaultProbe, isLinkEntry, reconcileTracked, SnapshotStore } from '../src/snapshot.ts'
+import { CURRENT_STORE_VERSION, defaultProbe, isLinkEntry, reconcileTracked, SnapshotStore } from '../src/snapshot.ts'
 
 let root: string
 let store: SnapshotStore
@@ -124,7 +124,7 @@ describe('byte-exact capture and restore', () => {
     expect('text' in parsed).toBe(false)
     expect(raw).not.toContain('中')
     expect(parsed).toMatchObject({
-      store: 2, callId: 'c1', file: live, blob: entryName.replace(/\.json$/, '.before'), size: 4,
+      store: CURRENT_STORE_VERSION, callId: 'c1', file: live, blob: entryName.replace(/\.json$/, '.before'), size: 4,
     })
   })
 })

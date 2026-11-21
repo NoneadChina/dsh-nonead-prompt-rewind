@@ -247,6 +247,8 @@ export type CleanupCommand =
   | { action: 'status' | 'on' | 'off' }
   | { action: 'max-age'; value: number }
   | { action: 'run'; target: 'rules' | 'current'; apply: boolean }
+  | { action: 'migrate'; apply: boolean }
+  | { action: 'gc'; apply: boolean }
 
 /**
  * Parse the free-form text after `/snapshot-auto-cleanup`. Pure so it is
@@ -291,6 +293,17 @@ export function parseCleanupCommand(rawInput: string): CleanupCommand | { error:
         }
       }
       return { action: 'run', target: current ? 'current' : 'rules', apply }
+    }
+    case 'migrate':
+    case 'gc': {
+      // Both verbs default to a dry run; `--apply` is the only switch, exactly
+      // like `run`. Anything else is a usage error (never a silent apply).
+      let apply = false
+      for (const rawFlag of parts.slice(1)) {
+        if (rawFlag === '--apply') apply = true
+        else return { error: `unknown /snapshot-auto-cleanup ${parts[0]} flag "${rawFlag}"` }
+      }
+      return { action: parts[0], apply }
     }
     default:
       return { error: `unknown /snapshot-auto-cleanup subcommand "${parts[0]}"` }

@@ -39,7 +39,7 @@
 
 import { createHash } from 'node:crypto'
 import type { Stats } from 'node:fs'
-import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import {
@@ -64,6 +64,16 @@ const PENDING_DIR = '.pending'
 
 /** Session-dir sub-directory holding one pre-restore ("rescue") copy per op. */
 const RESCUE_DIR = 'rescue'
+
+/**
+ * Store-root sub-directory holding the global content-addressed object pool.
+ * Every committed sidecar is hard-linked to `objects/<sha256>`; identical
+ * content therefore costs one inode across every session on the volume. The
+ * per-entry sidecar stays the only path an entry names, so the entry format and
+ * the whole read/restore path are unchanged: the pool is a dedup layer, never
+ * an entry's source of truth.
+ */
+const OBJECTS_DIR = 'objects'
 
 /** Journal-file prefix of the current format. */
 const JOURNAL_PREFIX = 'journal-'
@@ -114,8 +124,15 @@ export const DEFAULT_MIN_ANCHOR_GROUPS = 30
  * closed (no file restore, nothing changed) instead of guessing what the extra
  * fields mean. A missing marker (or `1`) means the released v1 string format,
  * which is still read.
+ *
+ * v3 keeps the v2 entry shape byte for byte; it adds the store-root
+ * `objects/<sha256>` pool that sidecars are hard-linked into (cross-session
+ * content dedup) and therefore signals a directory layout a v2 build must not
+ * treat as a session ("objects" is not a session). v2 entries stay readable and
+ * v2 hosts can still read any entry; the marker bump only stops a v2 writer
+ * from adopting a v3 store.
  */
-export const CURRENT_STORE_VERSION = 2
+export const CURRENT_STORE_VERSION = 3
 
 /**
  * Thrown when snapshots carry a store format newer than this build understands
@@ -731,6 +748,14 @@ function shortHash(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 8)
 }
 
+/**
+ * SHA-256 of one sidecar's bytes, as the object-pool key. Reading the file is
+ * fine: a committed sidecar is at most `maxFileBytes` (8 MiB by default).
+ */
+async function hashFile(file: string): Promise<string> {
+  return createHash('sha256').update(await readFile(file)).digest('hex')
+}
+
 /** The sidecar file name of one entry file (`<base>.json` → `<base>.before`). */
 function sidecarName(entryFile: string): string {
   return `${entryFile.slice(0, -'.json'.length)}${SIDECAR_SUFFIX}`
@@ -745,7 +770,7 @@ function refAnchorOf(ref: string): number {
 /** Serialize one in-memory entry for disk (the current byte format). */
 function entryToJson(entry: CheckpointEntry): Record<string, unknown> {
   const base = {
-    store: 2,
+    store: CURRENT_STORE_VERSION,
     callId: entry.callId,
     file: entry.path,
     time: entry.time,
@@ -761,7 +786,7 @@ function entryToJson(entry: CheckpointEntry): Record<string, unknown> {
 /** Serialize one in-memory dedup link for disk (the current byte format). */
 function linkToJson(link: LinkEntry): Record<string, unknown> {
   return {
-    store: 2,
+    store: CURRENT_STORE_VERSION,
     callId: link.callId,
     file: link.path,
     ref: link.ref,
@@ -798,7 +823,7 @@ async function readEntry(file: string, anchorSeq: number): Promise<StoredEntry |
   const callId = String(parsed.callId ?? '')
   const time = typeof parsed.time === 'number' ? parsed.time : 0
   const origin = { file }
-  if (parsed.store === 2) {
+  if (parsed.store === 2 || parsed.store === 3) {
     if (typeof parsed.file !== 'string') return undefined
     // Optional metadata: a malformed pin is ignored (the path falls back to the
     // final-component check), never treated as corruption.
@@ -1025,6 +1050,47 @@ export interface ClearSessionReport {
    * format.md §12), but the caller must report what it destroyed.
    */
   readonly newerStoreVersion?: number
+}
+
+/**
+ * Result of one object-pool garbage collection ({@link SnapshotStore.gcObjects}).
+ *
+ * An object with more than one link is still named by at least one entry
+ * sidecar; an object with a single link is reachable from the pool only, i.e.
+ * every entry that used to reference it was pruned or cleared.
+ */
+export interface GcObjectsReport {
+  /** Object files examined. */
+  readonly scanned: number
+  /** Objects removed (would-be count when `dryRun`). */
+  readonly deleted: number
+  /** Bytes reclaimed (would-be bytes when `dryRun`). */
+  readonly freedBytes: number
+  /** Whether nothing was really removed. */
+  readonly dryRun: boolean
+}
+
+/**
+ * Result of one object-pool migration ({@link SnapshotStore.migrateObjects}).
+ *
+ * `linked` counts sidecars that had no object yet (their bytes were published
+ * into the pool); `deduped` counts sidecars whose content already existed and
+ * were replaced by a hard link. `reclaimedBytes` is the disk space that
+ * replacement frees (0 in a `dryRun`, where nothing is replaced).
+ */
+export interface MigrateObjectsReport {
+  /** Sidecar files examined. */
+  readonly scanned: number
+  /** Sidecars that published their bytes into the pool for the first time. */
+  readonly linked: number
+  /** Duplicate sidecars replaced by a hard link to an existing object. */
+  readonly deduped: number
+  /** Bytes the dedup replacements reclaimed (would-be bytes when `dryRun`). */
+  readonly reclaimedBytes: number
+  /** Whether nothing was really written or removed. */
+  readonly dryRun: boolean
+  /** Garbage collection that ran after an apply (absent in a dry run). */
+  readonly gc?: GcObjectsReport
 }
 
 /**
@@ -1427,6 +1493,10 @@ export class SnapshotStore {
     const dirs: Array<{ name: string; dir: string }> = []
     for (const name of names) {
       if (name.startsWith('.')) continue
+      // The object pool lives at the store root but is NOT a session: it has no
+      // entries, marker, or journals, and treating it as one would let the
+      // total-budget eviction (or an age sweep) delete shared content.
+      if (name === OBJECTS_DIR) continue
       const dir = join(this.root, name)
       const st = await lstat(dir).catch(() => undefined)
       if (st?.isDirectory() === true) dirs.push({ name, dir })
@@ -1465,10 +1535,14 @@ export class SnapshotStore {
       if (total <= target) break
       if (this.activeSessionIds.has(row.name)) continue
       if (await this.hasUnfinishedRecovery(row.name)) continue
-      await this.clearSession(row.name)
+      await this.clearSession(row.name, { gc: false })
       this.sessionBytes.delete(row.name)
       total -= row.bytes
     }
+    // One pool sweep for the whole eviction pass: the removed sidecars were
+    // links into `objects/`, so their bytes are only freed once no session
+    // names them anymore.
+    await this.gcObjects().catch(() => undefined)
     await this.forgetMissingSessions()
     return total
   }
@@ -1669,6 +1743,9 @@ export class SnapshotStore {
     const dest = join(dirname(entryFile), sidecarName(basename(entryFile)))
     if (content.staged !== undefined) await rename(content.staged.file, dest)
     else await this.writeSidecar(dest, content.source)
+    // Publish the bytes into the global pool before the entry JSON names them:
+    // the sidecar is complete either way, and dedup is best-effort.
+    await this.linkIntoCAS(dest)
     const st = await stat(dest)
     return { source: { kind: 'blob', path: dest }, size: st.size }
   }
@@ -3041,6 +3118,169 @@ export class SnapshotStore {
     }
   }
 
+  /** Absolute path of the store-root content-addressed object pool. */
+  private get objectsDir(): string {
+    return join(this.root, OBJECTS_DIR)
+  }
+
+  /**
+   * Publish one committed sidecar into the global object pool: after this call
+   * the sidecar and `objects/<sha256>` are two links to the same inode, so an
+   * identical byte sequence committed by another session costs no extra disk.
+   *
+   * A no-op when the object already exists (the sidecar is replaced by a link
+   * to it) and BEST-EFFORT by design: dedup is an optimization, never a
+   * correctness requirement, so a filesystem that refuses hard links (FAT,
+   * exFAT, permissions) simply leaves the committed sidecar in place.
+   */
+  private async linkIntoCAS(file: string): Promise<void> {
+    let hash: string
+    try {
+      hash = await hashFile(file)
+    } catch {
+      return
+    }
+    const pool = this.objectsDir
+    const object = join(pool, hash)
+    // A sibling temp name (never `.before`, so it is never read as a sidecar).
+    const tmp = `${file}.cas`
+    try {
+      await mkdir(pool, { recursive: true })
+      // Two attempts cover the only real race: the object is missing on the
+      // first try (publish it from this sidecar), or another writer published
+      // it between the link and the retry (EEXIST is then benign).
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await rm(tmp, { force: true })
+          await link(object, tmp)
+          await rename(tmp, file)
+          return
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code
+          if (code === 'ENOENT' && attempt === 0) {
+            try {
+              await link(file, object)
+            } catch (createError) {
+              if ((createError as NodeJS.ErrnoException).code !== 'EEXIST') throw createError
+            }
+            continue
+          }
+          throw error
+        }
+      }
+    } catch {
+      // Keep the sidecar as it is; only the temp link may exist.
+      await rm(tmp, { force: true }).catch(() => undefined)
+    }
+  }
+
+  /**
+   * Mark-and-sweep the object pool: an object whose link count dropped to one
+   * is no longer named by any entry sidecar (prune, clear, or age sweep removed
+   * every reference) and its bytes are unreachable through the store.
+   *
+   * Safe against concurrent commits: a freshly published object always has at
+   * least two links (the pool entry plus the sidecar it was created from), so
+   * the `nlink <= 1` test can never delete a live object. A concurrent commit
+   * that loses its object to a sweep recreates it from its own sidecar.
+   */
+  async gcObjects(opts?: { readonly dryRun?: boolean }): Promise<GcObjectsReport> {
+    const dryRun = opts?.dryRun ?? false
+    let names: string[]
+    try {
+      names = await readdir(this.objectsDir)
+    } catch (error) {
+      if (isEnoent(error)) return { scanned: 0, deleted: 0, freedBytes: 0, dryRun }
+      throw error
+    }
+    let scanned = 0
+    let deleted = 0
+    let freedBytes = 0
+    for (const name of names) {
+      const file = join(this.objectsDir, name)
+      const st = await lstat(file).catch(() => undefined)
+      if (st === undefined || !st.isFile()) continue
+      scanned += 1
+      if (st.nlink > 1) continue
+      deleted += 1
+      freedBytes += st.size
+      if (!dryRun) await rm(file, { force: true })
+    }
+    return { scanned, deleted, freedBytes, dryRun }
+  }
+
+  /**
+   * Migrate existing sidecars into the object pool (the one-time v2 → v3 step).
+   *
+   * Every regular `.before` file is hashed; a missing object is published from
+   * the sidecar, and a duplicate sidecar is replaced by a hard link to the
+   * existing object — byte-identical, so no entry needs rewriting and the
+   * restore path is unchanged. `dryRun` (the default at the command layer)
+   * only measures: it reports how many sidecars would be linked/deduped and how
+   * many bytes the dedup would reclaim, without writing or deleting anything.
+   */
+  async migrateObjects(opts?: { readonly dryRun?: boolean }): Promise<MigrateObjectsReport> {
+    const dryRun = opts?.dryRun ?? false
+    let scanned = 0
+    let linked = 0
+    let deduped = 0
+    let reclaimedBytes = 0
+    for (const { name } of await this.sessionDirs()) {
+      const dir = this.sessionDir(name)
+      let anchors: string[]
+      try {
+        anchors = await readdir(dir)
+      } catch {
+        continue
+      }
+      for (const anchor of anchors) {
+        if (!/^\d+$/.test(anchor)) continue
+        let files: string[]
+        try {
+          files = await readdir(join(dir, anchor))
+        } catch {
+          continue
+        }
+        for (const file of files) {
+          if (!file.endsWith(SIDECAR_SUFFIX)) continue
+          const sidecar = join(dir, anchor, file)
+          const st = await lstat(sidecar).catch(() => undefined)
+          if (st === undefined || !st.isFile()) continue
+          scanned += 1
+          const hash = await hashFile(sidecar).catch(() => undefined)
+          if (hash === undefined) continue
+          const object = join(this.objectsDir, hash)
+          const existing = await lstat(object).catch(() => undefined)
+          if (existing === undefined) {
+            linked += 1
+            if (!dryRun) {
+              await mkdir(this.objectsDir, { recursive: true })
+              await link(sidecar, object).catch(() => undefined)
+            }
+            continue
+          }
+          // Already the same inode (a previous apply, or a fresh commit): leave
+          // it alone. `ino === 0` means the filesystem cannot report identity.
+          const sameInode = st.ino !== 0 && existing.ino === st.ino && existing.dev === st.dev
+          if (sameInode) continue
+          deduped += 1
+          reclaimedBytes += st.size
+          if (dryRun) continue
+          const tmp = `${sidecar}.cas`
+          try {
+            await rm(tmp, { force: true })
+            await link(object, tmp)
+            await rename(tmp, sidecar)
+          } catch {
+            await rm(tmp, { force: true }).catch(() => undefined)
+          }
+        }
+      }
+    }
+    if (dryRun) return { scanned, linked, deduped, reclaimedBytes, dryRun }
+    return { scanned, linked, deduped, reclaimedBytes, dryRun, gc: await this.gcObjects() }
+  }
+
   /**
    * Cross-session retention sweep: remove WHOLE session directories whose
    * newest member stamp is older than `maxAgeDays` days of idle, keeping the
@@ -3102,6 +3342,9 @@ export class SnapshotStore {
     }
     for (const name of names) {
       if (name.startsWith('.')) continue
+      // The object pool is not a session (see `sessionDirs`): an age sweep over
+      // it would remove the only extra links shared content has.
+      if (name === OBJECTS_DIR) continue
       const full = join(this.root, name)
       let st: Stats
       try {
@@ -3152,7 +3395,12 @@ export class SnapshotStore {
     }
     // A dry run must not touch memory (its contract): only a real sweep drops
     // the in-memory state of the sessions it removed.
-    if (!dryRun) await this.forgetMissingSessions()
+    if (!dryRun) {
+      // The deleted sessions' sidecars were links into the shared pool; sweep
+      // the orphaned objects so the reported `freedBytes` becomes real disk.
+      await this.gcObjects().catch(() => undefined)
+      await this.forgetMissingSessions()
+    }
     return report()
   }
 
@@ -3287,7 +3535,10 @@ export class SnapshotStore {
    *
    * `dryRun` computes the report without touching disk or memory.
    */
-  async clearSession(sessionId: string, opts?: { readonly dryRun?: boolean }): Promise<ClearSessionReport> {
+  async clearSession(
+    sessionId: string,
+    opts?: { readonly dryRun?: boolean; readonly gc?: boolean },
+  ): Promise<ClearSessionReport> {
     const dryRun = opts?.dryRun ?? false
     const stats = await this.sessionStats(sessionId)
     // An explicit clear is the user's escape hatch and is deliberately NOT
@@ -3311,6 +3562,10 @@ export class SnapshotStore {
       // removed out-of-band) would otherwise link a later recordEntry to a
       // deleted prior entry, leaving a dangling ref.
       this.forgetSession(sessionId)
+      // The cleared sidecars were links into the shared pool, so their bytes
+      // survive until the pool is swept. Callers that clear many sessions in a
+      // row (the total-budget sweep) pass `gc: false` and sweep once at the end.
+      if (opts?.gc !== false) await this.gcObjects().catch(() => undefined)
     }
     return {
       sessionId,

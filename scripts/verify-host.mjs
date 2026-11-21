@@ -518,7 +518,8 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
   const sessionDir = join(snapRoot, session.id)
   const markerFile = join(sessionDir, 'store')
   const previousMarker = await readFile(markerFile, 'utf8').catch(() => undefined)
-  await writeFile(markerFile, '3', 'utf8')
+  // One above CURRENT_STORE_VERSION: a marker this build cannot read.
+  await writeFile(markerFile, '4', 'utf8')
   try {
     // Preview first: the rewind below withdraws the target from the surface,
     // so it can no longer be previewed afterwards.
@@ -615,7 +616,7 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
   const dir = join(snapRoot, futureSession.id)
   await mkdir(join(dir, '5'), { recursive: true })
   await writeFile(join(dir, '5', 'entry.json'), JSON.stringify({ callId: 'c', anchorSeq: 5, path: join(wsDir, 'x.txt'), before: 'x', time: 1 }), 'utf8')
-  await writeFile(join(dir, 'store'), '3', 'utf8')
+  await writeFile(join(dir, 'store'), '4', 'utf8')
   // A session-format marker that does NOT match the loaded session: on the
   // wrong order this alone triggers the whole-directory clear.
   await writeFile(join(dir, 'format'), '0', 'utf8')
@@ -643,7 +644,7 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
   const members = await readdir(dir).catch(() => [])
   check('agent creation does not clear a newer store', members.includes('5') && members.includes('store'), `members=${members.join(',')}`)
   check('agent creation does not rewrite the format marker of a newer store', await readFile(join(dir, 'format'), 'utf8').catch(() => '') === '0', 'format marker changed')
-  check('agent creation leaves the newer store marker at its version', await readFile(join(dir, 'store'), 'utf8').catch(() => '') === '3', 'store marker changed')
+  check('agent creation leaves the newer store marker at its version', await readFile(join(dir, 'store'), 'utf8').catch(() => '') === '4', 'store marker changed')
 }
 
 // 4f. a non-regular target is never captured: no staged copy, no entry, no
