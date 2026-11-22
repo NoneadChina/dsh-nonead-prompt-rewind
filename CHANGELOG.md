@@ -6,6 +6,13 @@ and the release steps are documented in
 
 <!-- Release notes for v0.15.0 and earlier live in the GitHub Releases. -->
 
+## [Unreleased]
+
+### 问题修复
+
+- **撤销重放不再让会话无法重新加载**：0.6.0 把回放的 turn 号写成「最新日志 turn + 1,000,000」以避开 agent 的内存计数器，但 DSH 的会话校验要求 turn 号从 1 起严格连续、且只在**重新加载**时才校验——于是每次「回退 + 撤销」都会把日志写成一份下次打开就报 `SessionFormatError: turn/start does not open the expected turn` 的文件。现在改为写入日志的**下一个** turn 号，并在提交 `turn/start` **之前**同时校验、推进活动 agent 的回合计数器（`phase.lastTurn`）；agent 未暴露可用计数器时**先失败、不落盘任何回放事件**，由页面提示重载后重试（文件半仍然成功）。
+- **已损坏的会话可以修回**：`scripts/session-decode.mjs` 解码 → 按出现顺序重排 `turn`/`step` → `scripts/session-encode.mjs` 重新编码，即可让受影响的日志重新满足校验；原文件保持备份。
+
 ## [0.6.0] - 2026-11-21
 
 > 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）

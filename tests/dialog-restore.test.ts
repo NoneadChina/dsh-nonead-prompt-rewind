@@ -81,7 +81,7 @@ describe('dialog capture and replay', () => {
     expect(marker.seq).toBeGreaterThan(plan.targetSeq)
   })
 
-  it('republishes the withdrawn dialogue as one new turn past every logged turn', () => {
+  it('replays under the log\'s next turn number so the log still validates', () => {
     const session = Session.create(SessionId('dialog-replay'))
     appendTurn(session, 1)
     appendTurn(session, 2)
@@ -103,16 +103,15 @@ describe('dialog capture and replay', () => {
     expect(dump).toContain('question 2')
     expect(dump).toContain('answer 2')
 
-    // The replay must not reuse any turn the agent could still allocate: the
-    // agent hands out `lastTurn + 1` from memory, so the replayed turn has to
-    // land far beyond the log's newest turn.
+    // The validator accepts only a gap-free 1, 2, 3, … sequence of turns, and it
+    // runs on LOAD — a gap only surfaces when the session is reopened. So the
+    // replay must continue the numbering, never jump past it.
     const turns = session
       .snapshotEvents()
       .filter(event => event.type === 'turn/start')
       .map(event => (event.data as { turn: number }).turn)
-    const replayTurn = Math.max(...turns)
-    expect(replayTurn).toBeGreaterThan(2)
-    expect(turns.filter(turn => turn === replayTurn)).toHaveLength(1)
+    expect(turns).toEqual([1, 2, 3])
+    const replayTurn = turns[turns.length - 1]!
 
     // Every replayed message must be inside a step that was actually started,
     // or the Chat view never materializes the answer.
@@ -130,6 +129,37 @@ describe('dialog capture and replay', () => {
       const data = answer.data as { turn: number; step: number }
       expect(steps.has(`${data.turn}:${data.step}`)).toBe(true)
     }
+  })
+
+  it('moves the live agent\'s turn counter past the replayed turn', () => {
+    const session = Session.create(SessionId('dialog-agent'))
+    appendTurn(session, 1)
+    appendTurn(session, 2)
+    const dialog = [{ role: 'user' as const, content: [{ type: 'text', text: 'q' }] }]
+    // The agent allocates `lastTurn + 1` from memory, so after the replay lands
+    // on turn 3 the agent must hand out 4 — otherwise its next real turn reuses
+    // the replayed number and the log no longer loads.
+    const agent = {
+      phase: { kind: 'idle' as const, lastTurn: 2 },
+      setPhase(next: { kind: 'idle'; lastTurn: number }) {
+        this.phase = next
+      },
+    }
+    replayDialog(session, dialog, agent)
+    expect(agent.phase.lastTurn).toBe(3)
+  })
+
+  it('refuses before appending when the live agent\'s counter is unreadable', () => {
+    const session = Session.create(SessionId('dialog-agent-blind'))
+    appendTurn(session, 1)
+    appendTurn(session, 2)
+    const before = session.snapshotEvents().length
+    const dialog = [{ role: 'user' as const, content: [{ type: 'text', text: 'q' }] }]
+    // Fail closed: a replay whose turn the agent cannot be moved past must not
+    // reach the log at all, or the file half would be committed under a
+    // dialogue that no longer reloads.
+    expect(() => replayDialog(session, dialog, {})).toThrow()
+    expect(session.snapshotEvents().length).toBe(before)
   })
 
   it('keeps a journal for a conversation-only restore and undoes it', async () => {

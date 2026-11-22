@@ -207,17 +207,21 @@ Undo also restores the conversation, and it does so in the LOG, not in the view:
 no inverse of `replace`, and a bare replay is not enough either (a new `user/message` lands
 outside any turn; an `assistant/message` without a live step is never materialized — that is what
 pushed later answers out of order). So `replayDialog` writes the event shape the agent writes:
-one `turn/start` whose number is `newestLoggedTurn + 1_000_000`, one `step/start … step/end` per
-prompt/answer pair, then `turn/end`. The offset is load-bearing: the agent keeps its turn counter
-in memory (it reads `lastTurn` from the log once at construction, then hands out `lastTurn + 1`),
-so a replay at `maxTurn + 1` would be reused by the next real turn — and a reused turn number is
-worse than a key clash, because the client's location index files drafts by turn number and the
-revived messages would land at the old turn's position. Because the replay is a real turn at the
-end of the log, it survives a host restart and a full window rebuild. If a turn is still open when
-the undo arrives, the channel answers `rewind/undo-busy` and touches nothing, so a replay can
-never nest inside a live turn. Each history entry also records `markerSeq`, which lets the history
-UI name the shadowed span; it no longer releases anything. A rewind that shadowed only dialogue
-writes a journal with no file actions, so a conversation-only rewind is undoable once as well.
+one `turn/start` carrying the log's next turn number (closed turns + 1), one
+`step/start … step/end` per prompt/answer pair, then `turn/end`. The number must stay gap-free
+from 1: the session validator rejects any jump, and it only runs when the log is loaded.
+Because a replay is a real turn at the end of the log, it survives a host restart and a full
+window rebuild. Two counters have to agree: the log's, and the live agent's in-memory counter
+(it reads `lastTurn` from the log once at construction). So the same undo call advances
+`agent.phase.lastTurn` past the replayed turn; if that counter cannot be read the replay fails
+before the first append and the log is untouched. An older revision wrote
+`newestLoggedTurn + 1_000_000` to dodge the agent's counter — that keeps the agent happy and
+breaks the validator, and every such log fails to load with `SessionFormatError`. If a turn is
+still open when the undo arrives, the channel answers `rewind/undo-busy` and touches nothing, so
+a replay can never nest inside a live turn. Each history entry also records `markerSeq`, which
+lets the history UI name the shadowed span; it no longer releases anything. A rewind that
+shadowed only dialogue writes a journal with no file actions, so a conversation-only rewind is
+undoable once as well.
 ## 6. History and the Settings page
 History is an audit trail, never a restore source:
 
@@ -241,12 +245,12 @@ settings page (settings.section id 'rewind') ──RPC history / history.clear /
   `undoMode`. An undo restores **both halves**: the files come back through the restore journal,
   and the withdrawn dialogue is republished as a **new turn** — the surface has no inverse of
   `replace`, so `replayDialog` appends `turn/start` → `step/start` → `user/message` →
-  `assistant/message` → `step/end` → `turn/end` at the log tail. The turn number is
-  `newestLoggedTurn + 1_000_000`: the agent allocates turns from an in-memory counter seeded once
-  at construction, so a plain `max + 1` would be reused by the next real turn and the location
-  index would sort the restored nodes back into that old turn. An undo is refused with
-  `rewind/undo-busy` while a turn is still open, because appending inside an open turn would
-  attach the replay to it.
+  `assistant/message` → `step/end` → `turn/end` at the log tail. The turn number is the log's
+  next (closed turns + 1), gap-free for the load-time validator, and the same call advances the
+  live agent's counter past it — a replay that leaves the agent behind would be reused by the
+  next real turn, and a replay that skips ahead in the log would make the file unloadable. An
+  undo is refused with `rewind/undo-busy` while a turn is still open, because appending inside
+  an open turn would attach the replay to it.
   An undo writes the worktree through plain `node:fs` exactly like a rewind, so it runs the
   same **settle step**: it re-emits `fs/observed` for every restored/deleted path and drops
   the session's turn-anchor cache. Skipping it makes the session's next write of a restored

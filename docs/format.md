@@ -259,18 +259,26 @@ any turn and a new `assistant/message` without a live step is never materialized
 is exactly what used to scatter later answers. So the undo writes the same event shape
 the agent itself writes:
 
-- `turn/start` with `turn = newestLoggedTurn + 1_000_000`;
+- `turn/start` with `turn =` the log's next turn number — the count of closed turns plus
+  one, so the sequence stays `1, 2, 3, …` with no gaps;
 - one `step/start … step/end` per prompt/answer pair, the prompt as `user/message` and
   the answer as `assistant/message` (`stream: []`), both `surfaceOp: 'append'`;
 - `turn/end` with `{ kind: 'completed' }`.
 
-The offset matters. The agent allocates turn numbers from an in-memory counter: it
-reads `lastTurn` out of the log once, when it is constructed, then hands out
-`lastTurn + 1` without rereading. A replay at `maxTurn + 1` would therefore be reused by
-the agent's next real turn, and reusing a turn number is worse than a key clash — the
-client's location index keys turn drafts by number, so the revived messages would be
-filed at the old turn's position instead of the end. A million turns of headroom keeps a
-replay out of the agent's way.
+**Two counters have to agree, and only the log is checked.** The session validator
+requires `turn/start` to carry exactly the next number in a gap-free sequence from
+`1`, and it runs when the log is loaded, not when an event is appended. The agent, on
+the other hand, allocates turn numbers from an in-memory counter seeded once at
+construction. Writing the log's next number alone leaves the agent's counter behind, so
+its next real turn reuses a number. Therefore the undo, in the same call and before
+returning, advances the agent's counter past the replayed turn. If that counter cannot
+be read, the replay fails *before* the first append and the log is left untouched — a
+silent skip would let the agent collide on the very next turn.
+
+An earlier revision did the opposite: it wrote `newestLoggedTurn + 1_000_000` to stay
+clear of the agent. That satisfies the agent's counter and breaks the validator, and
+every log written that way fails to load with
+`SessionFormatError: turn/start does not open the expected turn`.
 
 Because the replay is a real turn at the end of the log, it survives a host restart and
 a full window rebuild, and the next prompt continues after it. `markerSeq` and

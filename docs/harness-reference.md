@@ -32,7 +32,8 @@ in [compat/audit.md](compat/audit.md).
 | Seam | Use in this plugin |
 | --- | --- |
 | `session.append('user/message', …)` | The rewind mutation (marker + `surfaceOp.replace`); an undo additionally appends a full `turn/start` … `turn/end` block that republishes the dialogue |
-| `session.snapshotEvents()` / `session.surface.nodes` | Pure planning input (`rewind.ts`), candidate listing, turn anchor, replay turn numbering (`newestLoggedTurn + 1_000_000`) |
+| `session.snapshotEvents()` / `session.surface.nodes` | Pure planning input (`rewind.ts`), candidate listing, turn anchor, replay turn numbering (the log's next turn = closed turns + 1, kept gap-free for the load-time validator) |
+| `agent.phase` / `agent.setPhase()` (unofficial) | After a replay, advance the live agent's in-memory turn counter past the replayed turn; read-through only, with a fail-closed refusal when the counter is unreadable |
 | `agent.cancel({ kind: 'user' }, { keepInbox: true })` | Stop a running turn before the surface is cut |
 | `ctx.commands.register()` | Four command registrations, each isolated so a name conflict costs one name |
 | `tools/execute` / `tools/post-execute` / `tools/result` | Before-capture, commit, and pending-capture cleanup |

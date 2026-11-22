@@ -790,18 +790,25 @@ export function collectDialog(session: Session, seqs: readonly number[]): Restor
 }
 
 /**
- * Distance between the newest logged turn and a replayed turn.
+ * The two turn counters a replay has to satisfy at once.
  *
- * The agent allocates turn numbers from an IN-MEMORY counter: it reads
- * `lastTurn` out of the log once, when it is constructed, and then hands out
- * `lastTurn + 1` without rereading. A replay that reused `maxTurn + 1` would
- * therefore collide with the agent's next real turn — and a reused turn number
- * is worse than a key clash: the client's location index keys turn drafts by
- * number, so the revived messages would be filed at the OLD turn's position
- * instead of the end of the conversation. Landing a million turns ahead is
- * what keeps a replay out of the agent's way for good.
+ * They only agree while they are kept in step, and each enforces a different
+ * rule:
+ *
+ * - The session validator (`accept()` in the harness) requires `turn/start`
+ *   numbers to run 1, 2, 3, … with no gap: `data.turn` must equal its own
+ *   `nextTurn`, and it re-checks that on LOAD. A gap is a log that refuses to
+ *   reload with "turn/start does not open the expected turn".
+ * - The live agent loop allocates from an IN-MEMORY counter: it reads
+ *   `lastTurn` out of the log once, when it is constructed, and then hands out
+ *   `lastTurn + 1` without rereading. A replay must therefore advance that
+ *   counter in the same breath (see {@link advanceReplayedTurn}), or the
+ *   agent's next real turn reuses the number and the log cannot be reloaded.
+ *
+ * Landing "a million turns ahead" satisfied the second counter by staying out
+ * of its way, but it broke the first one outright — every replay became an
+ * unloadable session.
  */
-const REPLAY_TURN_OFFSET = 1_000_000
 
 /** Provider/model stamped on replayed assistant messages. */
 const REPLAY_ASSISTANT_SOURCE = { provider: 'prompt-rewind', model: 'restored' } as const
@@ -825,15 +832,44 @@ function loggedEvents(session: Session): readonly { readonly type: string; reado
   }
 }
 
-/** Newest turn number in the log, or 0 when the log has no turn yet. */
-function newestTurn(session: Session): number {
-  let newest = 0
+/** The number the log's next `turn/start` must carry: one past every closed turn. */
+function nextTurnNumber(session: Session): number {
+  let next = 1
   for (const event of loggedEvents(session)) {
-    if (event.type !== 'turn/start' && event.type !== 'turn/end') continue
-    const turn = (event.data as { turn?: unknown } | undefined)?.turn
-    if (typeof turn === 'number' && turn > newest) newest = turn
+    if (event.type === 'turn/end') next += 1
   }
-  return newest
+  return next
+}
+
+/**
+ * The slice of a live agent loop that owns the in-memory turn counter.
+ *
+ * `@deepseek-ai/dsh-agent`'s public `Agent` face is just `{ id }`; the counter
+ * lives on the loop implementation (`ReactLoopAgent`) as `phase`, with
+ * `setPhase` publishing the transition. Both are read structurally here,
+ * because a harness that reshapes them must make the replay fail closed rather
+ * than write a turn the agent will then reuse.
+ */
+interface AgentTurnCounter {
+  readonly phase?: unknown
+  setPhase?(next: { readonly kind: 'idle'; readonly lastTurn: number }): void
+}
+
+/** The idle turn number a live agent will hand out next, or undefined when unreadable. */
+function agentLastTurn(agent: AgentTurnCounter): number | undefined {
+  const phase = agent.phase as { readonly kind?: unknown; readonly lastTurn?: unknown } | undefined
+  if (phase === undefined || phase === null || phase.kind !== 'idle') return undefined
+  return typeof phase.lastTurn === 'number' ? phase.lastTurn : undefined
+}
+
+/** Move a live agent's in-memory turn counter past one replayed turn. */
+function advanceReplayedTurn(agent: AgentTurnCounter, turn: number): void {
+  const phase = agent.phase
+  const setPhase = agent.setPhase
+  if (phase === undefined || phase === null || setPhase === undefined) {
+    throw new Error('the live agent does not expose a settable idle phase')
+  }
+  setPhase.call(agent, { ...(phase as object), kind: 'idle', lastTurn: turn })
 }
 
 /**
@@ -859,21 +895,37 @@ function turnIsOpen(session: Session): boolean {
  * location and a `assistant/message` without a live step is never materialized,
  * which is exactly what used to scatter later answers. So the replay builds the
  * full shape the agent itself writes — `turn/start`, one `step/start …
- * step/end` per prompt/answer pair, `turn/end` — under a turn number far past
- * every logged turn (see {@link REPLAY_TURN_OFFSET}).
+ * step/end` per prompt/answer pair, `turn/end` — under the log's NEXT turn
+ * number, and moves the live agent's counter past it (see the turn-counter
+ * comment above).
  *
- * Only text is restored: tool calls and results belong to the discarded future.
- * The surface keeps the original (shadowed) nodes, so the revived turn renders
- * as the newest exchange and nothing is duplicated.
- *
+ * @param session - the session whose log receives the replayed turn.
+ * @param dialog - the withdrawn messages, in their original order.
+ * @param agent - the live agent loop owning the in-memory turn counter, when
+ *   the caller has one. Omit it only when no agent is attached (a host-side
+ *   undo of a detached session), where a later construction reads the counter
+ *   back from the log.
  * @returns how many messages were republished.
  */
-export function replayDialog(session: Session, dialog: readonly RestoreDialogItem[]): number {
+export function replayDialog(
+  session: Session,
+  dialog: readonly RestoreDialogItem[],
+  agent?: unknown,
+): number {
   if (dialog.length === 0) return 0
   if (turnIsOpen(session)) {
     throw new Error('cannot replay a dialogue while a turn is still open')
   }
-  const turn = newestTurn(session) + REPLAY_TURN_OFFSET
+  // Both counters are decided BEFORE the first append: once `turn/start` is
+  // committed, an agent whose counter cannot advance leaves behind a turn it is
+  // bound to reuse — a log that no longer reloads. Failing here costs the
+  // dialogue half and leaves the file half intact.
+  const counter = agent as AgentTurnCounter | undefined
+  const lastTurn = counter === undefined ? undefined : agentLastTurn(counter)
+  if (counter !== undefined && lastTurn === undefined) {
+    throw new Error(t('error.replayAgentOutOfSync'))
+  }
+  const turn = nextTurnNumber(session)
   let step = 0
   let open = false
   let replayed = 0
@@ -920,6 +972,12 @@ export function replayDialog(session: Session, dialog: readonly RestoreDialogIte
     closeStep()
   } finally {
     session.append('turn/end', { turn, reason: { kind: 'completed' } })
+  }
+  // The log now sits a turn ahead of the agent's memory. Move the counter in the
+  // same breath, so the next real turn takes `turn + 1` rather than reusing the
+  // replayed number and colliding with a closed turn.
+  if (counter !== undefined && lastTurn !== undefined && lastTurn < turn) {
+    advanceReplayedTurn(counter, turn)
   }
   return replayed
 }
@@ -1202,7 +1260,7 @@ export function createRewindRpcHandler(
           let replayError: unknown
           if (outcome.failed.length === 0 && dialog.length > 0) {
             try {
-              replayed = replayDialog(session, dialog)
+              replayed = replayDialog(session, dialog, agent)
             } catch (error) {
               replayError = error
             }

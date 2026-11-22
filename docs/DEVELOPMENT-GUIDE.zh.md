@@ -683,7 +683,7 @@ workspaceKeyFromRegistry(sessionId, workspaces)
 | 10 | 已应用路径仍等于还原后状态 | `stale-undo`（附 `stalePaths`） |
 | 11 | 其它还原异常 | `undo-failed` |
 
-撤销**同时还原文件与对话**：文件按 journal 回滚；对话由 `replayDialog` 在日志尾部追加一个**真实回合**——`turn/start` →（每个 dialog 项）`step/start` → `user/message` / `assistant/message`（均 `surfaceOp: 'append'`，assistant 用 `stream: []`）→ `step/end` → `turn/end`。turn 号取 `最新日志 turn + 1_000_000`：agent 在构造时读一次投影里的 `lastTurn`，之后只做内存 `+1` 递推、不重读日志，所以用 `max + 1` 会被下一次真实回合复用同号，location index 会把恢复内容排回旧 turn 的位置（这正是早期版本"新输出错位"的成因）。只回放人类 user 消息与 assistant 的 `text` 块，不重放 tool call/result、reasoning、usage、stream。成功后的 `patch` 写入 `undoneAt` / `undoOutcome` / `undoMode: 'files+refill'`（没有对话可放时是 `'files'`）。
+撤销**同时还原文件与对话**：文件按 journal 回滚；对话由 `replayDialog` 在日志尾部追加一个**真实回合**——`turn/start` →（每个 dialog 项）`step/start` → `user/message` / `assistant/message`（均 `surfaceOp: 'append'`，assistant 用 `stream: []`）→ `step/end` → `turn/end`。turn 号取**日志的下一个 turn 号**（`turn/end` 计数 + 1）：DSH 的会话校验要求 turn 号从 1 起严格连续、且**只在重新加载时**校验，任何跳号（例如旧实现的 `+ 1_000_000`）都会把日志写成下次打不开的损坏文件。另一方面 agent 的回合号来自构造时读取一次的投影 `lastTurn`，之后只做内存 `+1` 递推、不重读日志，所以只写连续号而不动计数器同样会撞号。因此 `replayDialog` 在**提交 `turn/start` 之前**同时做两件事：算出连续号、读出活动 agent 的 `phase.lastTurn`；agent 未暴露可用的 idle 计数器时**直接失败、一个事件都不写**（文件半已完成，条目记 `partial` 并提示重载后重试），成功后用 `agent.setPhase({ kind: 'idle', lastTurn: turn })` 把计数器推过这一回合。只回放人类 user 消息与 assistant 的 `text` 块，不重放 tool call/result、reasoning、usage、stream。成功后的 `patch` 写入 `undoneAt` / `undoOutcome` / `undoMode: 'files+refill'`（没有对话可放时是 `'files'`）。
 
 `turnIsOpen` 为真（日志尾部还有未关闭的 `turn/start`）时，撤销在**任何写操作之前**返回 `rewind/undo-busy`，避免把重放内容拼进正在运行的回合。
 
