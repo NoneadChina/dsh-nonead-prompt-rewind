@@ -31,14 +31,14 @@ in [compat/audit.md](compat/audit.md).
 
 | Seam | Use in this plugin |
 | --- | --- |
-| `session.append('user/message', …)` | The one and only log mutation of a rewind (marker + `surfaceOp.replace`) |
-| `session.snapshotEvents()` / `session.surface.nodes` | Pure planning input (`rewind.ts`), candidate listing, turn anchor |
+| `session.append('user/message', …)` | The rewind mutation (marker + `surfaceOp.replace`); an undo additionally appends a full `turn/start` … `turn/end` block that republishes the dialogue |
+| `session.snapshotEvents()` / `session.surface.nodes` | Pure planning input (`rewind.ts`), candidate listing, turn anchor, replay turn numbering (`newestLoggedTurn + 1_000_000`) |
 | `agent.cancel({ kind: 'user' }, { keepInbox: true })` | Stop a running turn before the surface is cut |
 | `ctx.commands.register()` | Four command registrations, each isolated so a name conflict costs one name |
 | `tools/execute` / `tools/post-execute` / `tools/result` | Before-capture, commit, and pending-capture cleanup |
 | `session/event` (`user/message`) | Message-boundary re-check of tracked files |
 | `agent/created` | Session-format guard + store-version check |
-| `ctx.connection.rpc.handle('/dsh-rewind', …)` | Browser channel: `preview`, `candidates`, `history`, `history.clear`, `undo`, `caps` |
+| `ctx.connection.rpc.handle('/dsh-rewind', …)` | Browser channel: `preview`, `candidates`, `history`, `history.clear`, `undo`, `caps`, `archive` |
 | `ctx.settings` / `configForms` | Config schema, cleanup policy writes, one shared settings form model |
 | `conversation.input.for(scope).setDraft()` | Primary composer refill channel (DOM `[data-composer-input]` is the fallback) |
 | `uiConversation` chat view | Chat snapshot for visibility, candidates, the ↶ button, pending rows |
@@ -47,15 +47,19 @@ in [compat/audit.md](compat/audit.md).
 
 ## 3. Plugin source layout
 
-Host face — `src/`, seven files:
+Host face — `src/`, eleven files:
 
 | File | Responsibility |
 | --- | --- |
 | `index.ts` | The only cordis wiring layer: commands, tool hooks, session events, RPC, store construction, config schema |
 | `rewind.ts` | Pure planning: target parsing, candidate listing, surface-range computation, typed errors |
 | `snapshot.ts` | Checkpoint store: staged captures, commits, dedup links, restore planning, journals, prune, stale sweep |
+| `snapshot-policy.ts` | Capture policy: excluded dirs/extensions/globs, NUL sniffing, per-file and per-store byte budgets |
 | `history.ts` | Rewind audit trail: per-workspace partitions, atomic writes, chain helpers, corrupt-file recovery |
 | `snapshot-cleanup.ts` | Cleanup policy adapter, `/snapshot-auto-cleanup` argument grammar, auto-sweep throttle, last-sweep state |
+| `archive.ts` | Renders the shadowed surface events into a markdown archive; resolves its on-disk path |
+| `archive-store.ts` | Writes and reads `<dsh home>/rewind-archives/<session>/<opId>.md` |
+| `workspace-scan.ts` | First-seen workspace scan that brings unrecorded files into tracking |
 | `locales.ts` | Host-side command copy for the eight interface languages |
 | `marker.ts` | Producer-owned marker source identity (`{ kind: 'dsh-rewind' }`) |
 
@@ -66,7 +70,7 @@ Client face — `src/client/`, fourteen files:
 | `index.ts` | Client entry: locale registration, stylesheet, chat visibility, portal bridge, settings card/page, `/rewind` decoration |
 | `portals.tsx` | The per-message ↶ button, its popover, `runRewindAndFill` (command + composer refill), pending retract |
 | `confirm.ts` | Single-stage confirmation dialog (DOM): impact list, one confirm, Esc / ⌘/Ctrl+Enter |
-| `host-rpc.ts` | Typed browser half of `/dsh-rewind`: `preview`, `candidates`, `history`, `history.clear`, `undo`, `caps` |
+| `host-rpc.ts` | Typed browser half of `/dsh-rewind`: `preview`, `candidates`, `history`, `history.clear`, `undo`, `archive`, `caps` |
 | `settings-section.tsx` | The Rewind History page (`settings.section` `id: 'rewind'`) and its nav glyph (`settings.section.icon`): workspace header, history list, chain-tail undo, shared config block |
 | `settings-card.tsx` | The configuration card on the Plugins page (`plugins.bundle.config`), same form model as the page |
 | `hidden.ts` | Pure Chat-snapshot readers and executed-rewind cut derivation; mirrors `ENGINE_COMMAND` |
@@ -78,7 +82,7 @@ Client face — `src/client/`, fourteen files:
 | `log.ts` | Namespaced browser logger, gated by the `dsh-rewind.debug` localStorage switch |
 | `build-info.ts` | Injected build identity (`__DSH_REWIND_VERSION__`, `__DSH_REWIND_BUILD__`) and the package name |
 
-`scripts/`, eight entry points:
+`scripts/`, seven entry points:
 
 | File | Responsibility |
 | --- | --- |
@@ -90,7 +94,7 @@ Client face — `src/client/`, fourteen files:
 | `session-encode.mjs` | Re-encodes a plaintext session log to `.jsonl.zstd` fixtures |
 | `update-badge.mjs` | Updates the shields.io tests badge from a vitest JSON report |
 
-`tests/` holds 42 `*.test.ts` suites (planning, snapshot, history, undo, visibility,
+`tests/` holds 52 `*.test.ts` suites (planning, snapshot, history, undo, replay, archive, visibility,
 client, compatibility, crash safety, integration) plus `helpers.ts`, `scenarios.ts` and
 `support/ui-primitives-stub.ts`. `locale/` holds the eight `*.json` language metadata
 files; `assets/` holds the icon and the UI screenshots.

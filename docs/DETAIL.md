@@ -6,4 +6,4 @@ A rewind appends a single marker to the session log — the original events stay
 
 - Target: any earlier user message, chosen from the message's ↶ button or the Rewind history page.
 - Scope: conversation only, or conversation plus restored workspace files.
-- Undo: a rewind that moved files can be undone once from the Rewind history page; a conversation-only rewind cannot be undone, because the surface has already folded those events away.
+- Undo: the newest rewind can be undone once from the Rewind history page — the files come back from the snapshot store and the withdrawn user/assistant text is republished in order as a **new turn** (the surface has no inverse of `replace`, so these are new events; the log keeps both copies, and tool calls are not replayed). A conversation-only rewind is undoable once as well.

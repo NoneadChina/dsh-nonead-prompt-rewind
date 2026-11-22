@@ -1,6 +1,6 @@
 # dsh-nonead-prompt-rewind 开发指南
 
-> 面向接手开发者的当前状态手册，描述版本 **0.5.1** 的仓库实况。
+> 面向接手开发者的当前状态手册，描述版本 **0.6.0** 的仓库实况。
 > 用户视角的行为说明在 [README](../README.md)；模块分层与流水线见 [architecture](architecture.md)；
 > 磁盘格式见 [format](format.md)；DSH 接口见 [harness-reference](harness-reference.md)；
 > 兼容性结论见 [compat/audit](compat/audit.md)。**变更历史只属于 [CHANGELOG](../CHANGELOG.md)**，
@@ -58,7 +58,7 @@
 
 | 项 | 当前值 | 事实来源 |
 | --- | --- | --- |
-| 包名 / 版本 | `dsh-nonead-prompt-rewind` `0.5.1` | [package.json](../package.json) |
+| 包名 / 版本 | `dsh-nonead-prompt-rewind` `0.6.0` | [package.json](../package.json) |
 | 许可 | MIT | [LICENSE](../LICENSE) |
 | Node | `>=24.9.0` | `engines.node` |
 | DSH | `>=0.2.1-0 <0.3.1-0` | `engines.dsh`（自 DSH 0.2.1-alpha.4 起是唯一准入判据） |
@@ -66,17 +66,17 @@
 | 兼容口径 | 基线前进不收缩声明范围：`0.2.2-alpha.2` 与 `0.2.1-0` 线仍准入，靠 `caps` 运行时探测降级 | [compat/audit](compat/audit.md) `Version scope` |
 | 仓库自动化 | **没有** `.github/workflows/` | 仓库根目录实况；见 PLAN 待办 |
 | 界面语言 | 8：`en` `zh` `ja` `es` `fr` `de` `ru` `pt` | `HOST_DICTS` / `CLIENT_DICTS` |
-| 测试规模 | `tests/` 下 42 个 `*.test.ts` | 目录实况 |
+| 测试规模 | `tests/` 下 52 个 `*.test.ts` | 目录实况 |
 
 ### 1.5 规模（当前 HEAD）
 
 | 项 | 数值 |
 | --- | --- |
-| `src/` | 21 个 TypeScript/TSX 文件，约 1.1 万行 |
-| host 半 | 7 个文件，其中 `src/index.ts` 1823 行、`src/snapshot.ts` 3018 行 |
-| client 半 | 14 个文件，其中 `src/client/portals.tsx` 954 行、`src/client/index.ts` 548 行 |
-| `tests/` | 42 个 `*.test.ts` + `support/`、`helpers.ts`、`scenarios.ts` |
-| `scripts/` | 8 个 `.mjs` |
+| `src/` | 25 个 TypeScript/TSX 文件，约 1.4 万行 |
+| host 半 | 11 个文件，其中 `src/index.ts` 2558 行、`src/snapshot.ts` 4044 行 |
+| client 半 | 14 个文件，其中 `src/client/portals.tsx` 916 行、`src/client/index.ts` 538 行 |
+| `tests/` | 52 个 `*.test.ts` + `support/`、`helpers.ts`、`scenarios.ts` |
+| `scripts/` | 7 个 `.mjs` |
 | `docs/` | 17 个 Markdown + 预览图 |
 
 ---
@@ -112,12 +112,17 @@ assets/               # icon.svg 与 screenshots/
 | `src/snapshot.ts` | 检查点存储：捕获提交、还原计划、journal、崩溃恢复、prune、版本守卫 | `SnapshotStore`、`reconcileTracked`、`DEFAULT_MAX_FILE_BYTES`、`MAX_ANCHOR_GROUPS`、`CURRENT_STORE_VERSION` |
 | `src/history.ts` | 回退历史：按工作区分区、原子写、损坏文件移开、链尾工具 | `HistoryStore`、`workspaceKeyFromRegistry`、`cwdKey`、`errorText`、`previewText` |
 | `src/snapshot-cleanup.ts` | 清理策略：校验、持久化适配、命令语法、24h 节流 | `parseCleanupCommand`、`runAutoCleanupCheck`、`volatileCleanupStore`、`DEFAULT_CLEANUP_CONFIG` |
+| `src/snapshot-policy.ts` | 采集策略：排除目录/后缀/glob、NUL 嗅探、单文件与总量预算常数 | `decideSnapshotPath`、`looksBinary`、`isBinaryFile`、`DEFAULT_SCAN_MAX_FILE_BYTES`、`DEFAULT_MAX_SESSION_BYTES`、`DEFAULT_MAX_TOTAL_BYTES` |
+| `src/archive.ts` | 回退归档的渲染：把被遮蔽的 surface 事件摊平成 markdown | `renderArchiveMarkdown`、`flattenShadowedSeqs`、`archiveRef`、`resolveArchivePath`、`ARCHIVE_DIR` |
+| `src/archive-store.ts` | 归档落盘与回读（`<dsh home>/rewind-archives/<session>/<opId>.md`） | `writeRewindArchive`、`readRewindArchive` |
+| `src/workspace-scan.ts` | 首见工作区扫描：把未记录过的文件纳入追踪 | `discoverWorkspaceFiles`、`DEFAULT_SCAN_MAX_FILES`、`DEFAULT_SCAN_MAX_BYTES` |
 | `src/locales.ts` | host 侧文案（命令输出、错误、结果） | `HOST_DICTS`、`translate`、`preferredLocale`、`HostKey` |
 
 依赖方向（改动时守住）：
 
 ```
-index.ts → rewind.ts / marker.ts / snapshot.ts / history.ts / snapshot-cleanup.ts / locales.ts
+index.ts → rewind.ts / marker.ts / snapshot.ts / snapshot-policy.ts / history.ts /
+           snapshot-cleanup.ts / archive.ts / archive-store.ts / workspace-scan.ts / locales.ts
 snapshot.ts → node:fs + 注入 seam（DiskProbe / DeleteFile / crash hook）
 rewind.ts   → 只读 SessionEvent / surface，无 I/O、无 Session 实例
 ```
@@ -128,14 +133,14 @@ rewind.ts   → 只读 SessionEvent / surface，无 I/O、无 Session 实例
 
 | 文件 | 职责 |
 | --- | --- |
-| `index.ts` | 客户端入口：注册 locale、注入样式、安装可见性补丁、注册三个槽位、命令装饰 |
+| `index.ts` | 客户端入口：注册 locale、注入样式、安装可见性补丁、注册四个槽位、命令装饰 |
 | `portals.tsx` | React portal 桥：每消息 ↶ 按钮、pending 撤回按钮、`runRewindAndFill`、输入框写入 |
 | `confirm.ts` | 单阶段确认框（纯 DOM）：影响清单、焦点、键盘、定位、关闭 |
 | `candidates.ts` | 纯函数候选计算（chat 快照 → popupSelect 行） |
 | `hidden.ts` | chat 快照读取、回退 cut 推导、目标文本/图片引用提取、引擎命令判定 |
 | `visibility.ts` | 包装 chat 视图 builder，把 `[target, marker]` 区间标记 `visibility: 'hidden'` |
 | `pending.ts` | 纯函数：DOM 中的 pending 气泡与 inbox `next-step` 行配对、撤回区间 |
-| `host-rpc.ts` | `/dsh-rewind` 的浏览器客户端：preview / candidates / history / history.clear / undo / caps |
+| `host-rpc.ts` | `/dsh-rewind` 的浏览器客户端：preview / candidates / history / history.clear / undo / archive / caps |
 | `settings-section.tsx` | 设置页「回退历史」：列表、导出、清空、链尾撤销、能力降级提示 |
 | `settings-card.tsx` | 插件配置卡：备份开关、自动清理开关与失活天数；与设置页共用同一表单模型 |
 | `locales.ts` | client 文案（按钮、确认框、设置页、配置卡、错误码映射） |
@@ -156,13 +161,13 @@ rewind.ts   → 只读 SessionEvent / surface，无 I/O、无 Session 实例
 
 ### 2.5 tests/
 
-按主题分四类（共 42 个套件）：
+按主题分四类（共 52 个套件）：
 
 | 类别 | 代表文件 | 关注点 |
 | --- | --- | --- |
 | 纯逻辑 | `rewind.test.ts`、`candidates.test.ts`、`hidden.test.ts`、`pending.test.ts`、`history.test.ts`、`locales.test.ts` | 目标解析、区间、分区键、文案键完整 |
-| 存储与崩溃 | `snapshot.test.ts`、`snapshot-bytes.test.ts`、`crash-safety.test.ts`、`restart-scenario.test.ts`、`downgrade-safety.test.ts`、`undo-restore.test.ts`、`file-cap.test.ts`、`snapshot-mode.test.ts`、`snapshot-cleanup.test.ts` | 字节精确、journal、版本失败关闭、上限、清理 |
-| 会话与兼容 | `session-integration.test.ts`、`lifecycle-roundtrip.test.ts`、`compat-invariants.test.ts`、`compat-interop.test.ts`、`compat-gaps.test.ts`、`parent-guard.test.ts`、`compact-compat.test.ts`、`image-offload-projection.test.ts` | surfaceOp 语义、`/compact` 叠加、子代理跳过 |
+| 存储与崩溃 | `snapshot.test.ts`、`snapshot-bytes.test.ts`、`crash-safety.test.ts`、`restart-scenario.test.ts`、`downgrade-safety.test.ts`、`undo-restore.test.ts`、`undo-settle.test.ts`、`archive.test.ts`、`file-cap.test.ts`、`snapshot-mode.test.ts`、`snapshot-cleanup.test.ts` | 字节精确、journal、版本失败关闭、上限、清理、归档 |
+| 会话与兼容 | `session-integration.test.ts`、`lifecycle-roundtrip.test.ts`、`dialog-restore.test.ts`、`compat-invariants.test.ts`、`compat-interop.test.ts`、`compat-gaps.test.ts`、`parent-guard.test.ts`、`compact-compat.test.ts`、`image-offload-projection.test.ts` | surfaceOp 语义、撤销重放新 turn、`/compact` 叠加、子代理跳过 |
 | 客户端 | `client-*.test.ts`（dom / lifecycle / refill / retract / portal-refresh / composer / confirm / settings-* 等）、`visibility.test.ts`、`log.test.ts`、`chat-channel.test.ts` | portal 挂载、回填守卫、确认框键盘、设置页状态机 |
 
 `tests/support/ui-primitives-stub.ts` 不是测试，而是 `vitest.config.ts` 的 alias 桩：把宿主的重型 primitives 包替换成同契约的轻量实现。
@@ -256,7 +261,7 @@ export const inject = ['slots', 'sessions', 'locale', 'commandUi', 'configForms'
 | 通道 | 方向 | 用途 |
 | --- | --- | --- |
 | 命令 `prompt-rewind` | client → host | 执行回退（`/prompt-rewind @<seq>`），走人类命令通道但机器驱动 |
-| RPC `/dsh-rewind` | client → host | 预览影响、候选列表、历史、清空、撤销、能力 |
+| RPC `/dsh-rewind` | client → host | 预览影响、候选列表、历史、清空、撤销、归档、能力 |
 | React 槽位 / chat 快照 | host → client（只读） | 渲染状态与回退 cut |
 | 会话日志 | 双向只读 | 目标定位、cut 推导、历史预览 |
 | 常量镜像 | 各自硬编码 | `ENGINE_COMMAND`（`src/index.ts` ↔ `src/client/hidden.ts`）、`SETTINGS_ENTRY_ID` |
@@ -678,9 +683,11 @@ workspaceKeyFromRegistry(sessionId, workspaces)
 | 10 | 已应用路径仍等于还原后状态 | `stale-undo`（附 `stalePaths`） |
 | 11 | 其它还原异常 | `undo-failed` |
 
-撤销**同时还原文件与对话**：文件按 journal 回滚；对话把回退时被遮蔽的 user/assistant 文本消息按序 append 成**新事件**（surface 没有 `replace` 的反操作，原节点永久保持遮蔽，日志里因此保留两份）。只回放人类 user 消息与 assistant 的 `text` 块，不重放 tool call/result、reasoning、usage、stream；回放的 assistant 事件使用 `turn: 0, step: 0`。成功后 `patch` 条目写入 `undoneAt` / `undoOutcome` / `undoMode: 'files'`。
+撤销**同时还原文件与对话**：文件按 journal 回滚；对话由 `replayDialog` 在日志尾部追加一个**真实回合**——`turn/start` →（每个 dialog 项）`step/start` → `user/message` / `assistant/message`（均 `surfaceOp: 'append'`，assistant 用 `stream: []`）→ `step/end` → `turn/end`。turn 号取 `最新日志 turn + 1_000_000`：agent 在构造时读一次投影里的 `lastTurn`，之后只做内存 `+1` 递推、不重读日志，所以用 `max + 1` 会被下一次真实回合复用同号，location index 会把恢复内容排回旧 turn 的位置（这正是早期版本"新输出错位"的成因）。只回放人类 user 消息与 assistant 的 `text` 块，不重放 tool call/result、reasoning、usage、stream。成功后的 `patch` 写入 `undoneAt` / `undoOutcome` / `undoMode: 'files+refill'`（没有对话可放时是 `'files'`）。
 
-纯对话回退（没有文件动作）也会写 `actions: []` + `dialog` 的 journal，因此同样可以撤销一次；没有 `dialog` 的旧 journal 仍只还原文件。回放失败不回滚已还原的文件，条目记为 `partial` 并报告 `<conversation>` 路径。
+`turnIsOpen` 为真（日志尾部还有未关闭的 `turn/start`）时，撤销在**任何写操作之前**返回 `rewind/undo-busy`，避免把重放内容拼进正在运行的回合。
+
+纯对话回退（没有文件动作）也会写 `actions: []` + `dialog` 的 journal，因此同样可以撤销一次；没有 `dialog` 的旧 journal 仍只还原文件。回放失败不回滚已还原的文件，条目记为 `partial` 并报告 `<conversation>` 路径。`markerSeq`（回退时 marker 的日志 seq）只作历史记录与诊断，不参与展示逻辑。
 
 completed journal 就是这份撤销记录：`prune` 只回收 `rolled-back` 的记录，最新的 completed 保留，下一次回退在写自己的 journal 之前先退休旧记录，所以每会话最多一份。撤销中途失败（`recovery-required`）或进程在 rollback 中退出（`rollback-running`）都**可以重试**：`undoRestore` 识别这两种状态后直接从 rescue 续跑，不要求重来。
 
@@ -700,7 +707,7 @@ completed journal 就是这份撤销记录：`prune` 只回收 `rolled-back` 的
 - 导航图标：另注册 `settings.section.icon`，`id` 必须与页面同为 `'rewind'`（不匹配的 id 永不渲染；没有图标注册时外壳渲染中性默认字形）。组件只接收外壳给的 `size`（px）与 `active`，颜色与容器由外壳负责，因此图标用 `currentColor` 描边；图形取「绕回自身的线 + 左向箭头」（24 网格 / stroke 1.9），在导航位约 16px 下仍清晰。**不要用时钟造型**：宿主给相邻的「提示词历史」用的就是时钟，两个时钟形图标会被读成同一项。
 - 页面内容：工作区标题、刷新/导出 JSON/清空（二次确认）、历史列表（outcome 徽章、相对时间、`@targetSeq`、预览、文件数、撤销按钮）、能力降级提示、配置卡片嵌入。
 - 撤销按钮只在 `entry.undoable && undoneAt === undefined && entry.opId === tailOpId` 时出现。
-- 数据全部走 RPC（`history` / `history.clear` / `undo` / `caps`），页面从不读磁盘。
+- 数据全部走 RPC（`history` / `history.clear` / `undo` / `archive` / `caps`），页面从不读磁盘。
 - 会话切换会让页面重新加载（`currentSessionId` 变化 → `reload`），并用 `loadSeq` 丢弃过期响应，避免显示上一个工作区的列表。
 - 主题：所有颜色来自 `dsw` token 的 `dsh-rewind-*` class，无内联颜色。
 
@@ -784,14 +791,14 @@ npm run typecheck
 
 - `vitest.config.ts`：`environment: 'node'`，`include: ['tests/**/*.test.ts']`。
 - alias 把 `@deepseek-ai/dsh-client-ui-primitives` 指到 `tests/support/ui-primitives-stub.ts`（真包会拖入 shiki/anser 等 shell 才有的重依赖）。类型仍来自真包声明。
-- 42 个套件，分类见 §2.5。
+- 52 个套件，分类见 §2.5。
 - 客户端套件跑在 node 环境里，用 `jsdom`（devDependency）或手搓的 DOM 替身，不启动浏览器。
 
 ### 7.5 verify-host
 
 真 `Context` + 真 `Session` + 临时目录（`mkdtemp`），把 `snapshotDir` 指到临时目录，文件是真实磁盘文件。它是**产物级**验证：import 的是 `lib/index.js`，不是 `src/`。
 
-分 17 组（约 130 个 `check(...)` 断言点）：
+编号组 `1`…`17`（含 `4b`–`4l`、`8b`–`8c`、`12b` 等细分段），共 137 个 `check(...)` 断言点：
 
 | 组 | 覆盖 |
 | --- | --- |
@@ -842,7 +849,7 @@ npm run typecheck
 client 半每次加载输出一行：
 
 ```
-[dsh-rewind:boot] loaded v0.5.1 (build <8 位源码哈希>)
+[dsh-rewind:boot] loaded v0.6.0 (build <8 位源码哈希>)
 ```
 
 用于回答"我跑的是不是修好的那个包"——最常见的根因（缓存/没重启/装的是旧 tarball）一眼排除。哈希由 `build.mjs` 对 `src/client/**` 全部内容计算，因此改任一 client 文件都会变。
@@ -949,7 +956,7 @@ npm run build && node scripts/verify-host.mjs
 
 1. **不追踪子代理会话**，也不在子代理里提供回退面（`isSubagentSession` 是唯一判定点：捕获、边界复查、`agent/created` 对账、自动清扫触发）。
 2. 历史分区由 host 推导；客户端不许传 partition key。
-3. 撤销只对链尾、只一次、只还原文件。
+3. 撤销只对链尾、只一次；文件按 journal 回滚，对话作为一个新 turn 重放（未关闭回合时拒绝）。
 
 ### 10.4 工程
 
@@ -992,7 +999,8 @@ npm run build && node scripts/verify-host.mjs
 | RPC | `candidates` | `{sessionId}` → `{candidates}` |
 | RPC | `history` | `{sessionId}` → `{workspace, entries}` |
 | RPC | `history.clear` | `{sessionId}` → `{cleared}` |
-| RPC | `undo` | `{sessionId, opId}` → `{kind, restored, deleted, failed}` |
+| RPC | `undo` | `{sessionId, opId}` → `{kind, restored, deleted, replayed, failed}` |
+| RPC | `archive` | `{sessionId, opId}` → `{path, text}`（回退时渲染的对话归档 markdown） |
 | RPC | `caps` | `{sessionId}` → `{history, undo, fileCheckpointing}` |
 
 ## 附录 C：术语

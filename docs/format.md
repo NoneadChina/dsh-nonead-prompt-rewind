@@ -311,6 +311,7 @@ interface HistoryEntryJson {
   sessionTitle?: string
   at: number                       // epoch ms of the rewind
   targetSeq: number                // target user-message seq; -1 when unresolved
+  markerSeq?: number               // log seq of the rewound marker; names the cut (absent on older entries)
   hadFiles: boolean                // the rewind touched files (a journal exists)
   outcome: 'success' | 'failed' | 'partial'
   shadowedEvents: number           // log events shadowed by the marker

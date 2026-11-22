@@ -62,7 +62,7 @@ dsh plugin --profile <name> add dsh-nonead-prompt-rewind@<version>
 <summary><b>Edge notes</b></summary>
 
 - **The withdrawn content is preserved** — it stays in the session log and can be inspected in the **Trajectory** panel; you can also disable the plugin to show it again (display only).
-- **The conversation cannot be undone in place; the files can** — Settings → **Rewind history** restores the files of the newest rewind once.
+- **An undo restores the dialogue too** — Settings → **Rewind history** puts the files back and republishes the withdrawn user/assistant text in order as a new turn (the surface has no inverse of `replace`, so these are new message events; the log keeps both copies, and tool calls are not replayed). A conversation-only rewind is undoable once as well.
 - **Interruptions rewind too** — a `steering` message the model hasn't read yet is also a valid rewind target, and withdrawing it does not interrupt the current run.
 - **Rewinding a read message interrupts the running turn** — to ensure the rewind runs safely.
 - **Changes made while snapshots were off cannot be restored** — backups are the only source a restore draws from.
@@ -120,7 +120,7 @@ Compared with the default behavior:
 | Conversation rewind | Branch into a new conversation | **In-place rewind** — no new session branch, no window switch, no leftover session copies |
 | File restore | Manual restore / Git management | **Restored together** — lightweight before-write backups; one confirmation rewinds the conversation and the files, fitting agent workflows |
 | Restore dependencies | Often needs a Git repository or a full snapshot engine | **None** — no Git repository and no code project required; works in any directory |
-| History and undo | No unified record | **Per-workspace trail** — the last 10 rewinds are listed, and the newest one's file changes can be undone |
+| History and undo | No unified record | **Per-workspace trail** — the last 10 rewinds are listed, and the newest one can undo both halves: its file changes and the dialogue it withdrew |
 
 ## How it works
 

@@ -31,7 +31,7 @@ what the user already sees and adds nothing to attribution.
 | `boot` | Startup identity line only (see below); gated by the verbose switch |
 | `refill` | The composer refill after a rewind: the command/wait/refill throwing, a rejected or unmatched command, an outcome that never settles within the timeout, an image reference that is incomplete or of an unsupported type, a composer that refuses restored images or throws on the write/focus |
 | `preview` | The preview / candidate RPC queries behind the confirmation dialog and the `/rewind` picker: RPC failure, invalid result, timeout, or a throw |
-| `history` | The rewind-history and undo endpoints: history read, `history.clear`, `caps`, `undo` failing or returning an invalid result |
+| `history` | The rewind-history and undo endpoints: history read, `history.clear`, `caps`, `undo`, `archive` failing or returning an invalid result |
 | `portals` | Per-message button mount issues: no session binding, the inbox projection subscription failing |
 | `retract` | The pending-steering retract path: the remove losing its race (`info`) or throwing (`warn`) |
 | `settings` | The configuration card and the Rewind history settings page |

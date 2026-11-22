@@ -32,9 +32,9 @@ from `npm run check` (`typecheck` → `build` → `test` → `verify-host` → `
 
 | Layer | What it drives | Where |
 | --- | --- | --- |
-| Unit suites | Pure planning, the on-disk store, history, locales, client helpers | the 42 `tests/*.test.ts` files |
+| Unit suites | Pure planning, the on-disk store, history, locales, client helpers | the 52 `tests/*.test.ts` files |
 | Compatibility probes | Four consumer-facing probe suites — replayability, surface consistency, folds, compaction interop, client ordering, tool-update projection | `compat-invariants` · `compat-interop` · `compat-gaps` · `compat-tool-updates` |
-| End-to-end host run | The real host plugin over a real `Session`, a real command registry and a fake fs: 17 numbered groups (command registration → surface cut → checkpoint capture → restore → crash/recovery → compaction → cleanup → plan mode) | `scripts/verify-host.mjs` |
+| End-to-end host run | The real host plugin over a real `Session`, a real command registry and a fake fs: numbered groups `1`…`17` with subdivisions (`4b`–`4l`, `8b`–`8c`, `12b`), 137 `check(…)` assertions (command registration → surface cut → checkpoint capture → restore → crash/recovery → compaction → cleanup → plan mode) | `scripts/verify-host.mjs` |
 | Publish layout | Bundle externals, export subpaths, tarball allowlist, engines/peer consistency | `tests/package-layout.test.ts` |
 | Capability probe | Which Host/Client capabilities the installed DSH line actually ships | `scripts/probe-caps.mjs` |
 
@@ -104,6 +104,7 @@ alternate API for the same seam.
 | I7 client ordering | A log carrying tool turns and rewind markers (a single `user/message` replace) satisfies the client builder's ordering, live and after resume | `compat-interop` I7 |
 | I8 runtime safety | Rewind / compaction combinations never leave a dangling step/turn frame; a running agent is force-stopped first, and a cancel that never quiesces aborts the rewind | `verify-host` 8/9/13 |
 | I9 tool-update projection | `Session.toolHistory()` folds the whole log, so a withdrawn `tool-addition` stays recorded; after a withdrawal no `tool-addition` / `tool-removal` block reaches the provider and the current declarations stay complete | `compat-tool-updates` I9 |
+| I10 undo replay structure | An undo that republishes the dialogue appends one real `turn/start` … `turn/end` block whose turn number is distinct from, and far above, every logged turn (`newestLoggedTurn + 1_000_000`, because the agent's counter is seeded once and would otherwise reuse `max + 1`); every replayed `assistant/message` has a matching `step/start` for the same `turn:step`; the block never nests inside an open turn (`rewind/undo-busy` instead) | `tests/dialog-restore.test.ts` |
 
 ## Open items
 

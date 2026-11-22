@@ -62,11 +62,14 @@ npm run verify:host    # end-to-end host verification (full check suite)
   `parent-guard`), and crash-safety scenarios in `tests/crash-safety.test.ts`
   via the test-only `crash` seam (`RestoreRunOptions.crash`).
 - Harness interaction → the compatibility suites
-  (`compat-invariants` / `compat-interop` / `compat-gaps`) and
-  `scripts/verify-host.mjs`.
+  (`compat-invariants` / `compat-interop` / `compat-gaps`), the replay suite
+  (`dialog-restore`), and `scripts/verify-host.mjs`.
 
 ## Releasing
 
-Releases are CI-driven via GitHub Actions Trusted Publishing (OIDC, no stored
-token): push a `v<version>` tag and CI publishes with Sigstore provenance. Full
-details: `docs/release/release.md`.
+Releases are **manual** today: the repository has no `.github/workflows/`, so
+pushing a `v<version>` tag does not publish anything and Trusted Publishing is
+not configured yet. The current steps (build gate, `npm publish --provenance`,
+`scripts/changelog-extract.mjs <tag>` for the release notes, smoke test) are
+documented in `docs/release/release.md`; the plan to automate them is §2.1 of
+`docs/DEVELOPMENT-PLAN.zh.md`.

@@ -62,12 +62,15 @@ in `window.__ModuleLoader__.load({ id, factory })`) and `lib/types/**`; `exports
 always carries both faces.
 ## 3. Module layering and dependency rules
 ```text
-marker.ts, locales.ts            producer identity + copy dictionaries (no cordis)
-rewind.ts                        pure planning: parse, candidates, plan the cut
-snapshot.ts                      checkpoint store: capture, commit, plan, restore, journal, prune
-history.ts, snapshot-cleanup.ts  fs-only policy stores (audit trail; cleanup policy + sweep)
-index.ts                         host wiring: cordis context, commands, tool hooks, RPC
-client/*                         browser wiring: slots, portals, dialogs, settings, visibility
+marker.ts, locales.ts                     producer identity + copy dictionaries (no cordis)
+rewind.ts                                 pure planning: parse, candidates, plan the cut
+snapshot-policy.ts                        capture policy: exclusions, binary sniffing, byte budgets
+snapshot.ts                               checkpoint store: capture, commit, plan, restore, journal, prune
+archive.ts, archive-store.ts              folded-conversation markdown: render, write, read
+workspace-scan.ts                         first-seen scan that brings unrecorded files into tracking
+history.ts, snapshot-cleanup.ts           fs-only policy stores (audit trail; cleanup policy + sweep)
+index.ts                                  host wiring: cordis context, commands, tool hooks, RPC
+client/*                                  browser wiring: slots, portals, dialogs, settings, visibility
 ```
 Four rules keep the layers testable and replaceable:
 
@@ -221,7 +224,7 @@ History is an audit trail, never a restore source:
 ```text
 executeRewind ──append(entry)──▶ HistoryStore ──▶ <dsh home>/rewind-history/<workspaceKey>/history.json
                                       ▲
-settings page (settings.section id 'rewind') ──RPC history / history.clear / undo / caps──┘
+settings page (settings.section id 'rewind') ──RPC history / history.clear / undo / archive / caps──┘
 ```
 - The **partition key is resolved host-side** from the active session: the host reverse-looks
   the session id up in the workspace registry and uses `ws-<workspaceId>`; a session the
@@ -235,8 +238,15 @@ settings page (settings.section id 'rewind') ──RPC history / history.clear /
   (`undo-unavailable`, with a reason), verifies every applied path still matches its
   post-restore state, and rejects the whole batch with `stale-undo` (listing the paths) when
   the user edited a file after the rewind. Success patches `undoneAt` / `undoOutcome` /
-  `undoMode`; undo restores **files only** because the conversation nodes were removed from
-  the surface.
+  `undoMode`. An undo restores **both halves**: the files come back through the restore journal,
+  and the withdrawn dialogue is republished as a **new turn** — the surface has no inverse of
+  `replace`, so `replayDialog` appends `turn/start` → `step/start` → `user/message` →
+  `assistant/message` → `step/end` → `turn/end` at the log tail. The turn number is
+  `newestLoggedTurn + 1_000_000`: the agent allocates turns from an in-memory counter seeded once
+  at construction, so a plain `max + 1` would be reused by the next real turn and the location
+  index would sort the restored nodes back into that old turn. An undo is refused with
+  `rewind/undo-busy` while a turn is still open, because appending inside an open turn would
+  attach the replay to it.
   An undo writes the worktree through plain `node:fs` exactly like a rewind, so it runs the
   same **settle step**: it re-emits `fs/observed` for every restored/deleted path and drops
   the session's turn-anchor cache. Skipping it makes the session's next write of a restored
@@ -256,7 +266,8 @@ fails closed when it is absent.
 | `candidates` | `{ sessionId }` | `{ candidates }` | human user messages on the surface, newest first |
 | `history` | `{ sessionId }` | `{ workspace, entries }` | partition derived host-side |
 | `history.clear` | `{ sessionId }` | `{ cleared }` | records only |
-| `undo` | `{ sessionId, opId }` | `{ kind: 'ok' \| 'partial', restored, deleted, failed }` | chain tail, once per entry, files only |
+| `undo` | `{ sessionId, opId }` | `{ kind: 'ok' \| 'partial', restored, deleted, replayed, failed }` | chain tail, once per entry; files + dialogue replay |
+| `archive` | `{ sessionId, opId }` | `{ path, text }` | the rewind's rendered conversation archive (markdown); the only way back to the full folded transcript, tool calls included |
 | `caps` | `{ sessionId }` | `{ history, undo, fileCheckpointing }` | what THIS host provides |
 
 Failures use a stable `{ ok: false, error: { code, message, details } }` envelope; codes are

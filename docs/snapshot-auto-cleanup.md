@@ -70,7 +70,9 @@ starts recording fresh from its current state.
 
 This is one-way for that session's file-rewind history: earlier code states can no longer be
 restored. The conversation is untouched, and rewind-history records are kept — they simply
-cannot restore files whose snapshots are gone.
+cannot restore files whose snapshots are gone. Cleanup also removes the session's
+`restore-journal` (the undo record), so that rewind can no longer be undone either: `undo`
+answers `rewind/undo-unavailable` while the history entry stays visible as an audit record.
 
 ## Active-session protection
 

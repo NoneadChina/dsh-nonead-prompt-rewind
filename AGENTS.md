@@ -27,13 +27,17 @@ them at runtime, so the published tarball does not carry them.
 - `src/index.ts` — host plugin: `/rewind`, `/undo`, `/snapshot-auto-cleanup`
   commands + checkpoint pipeline (`tools/execute` | `post-execute`) + the
   `/dsh-rewind` RPC channel (`preview`, `candidates`, `history`,
-  `history.clear`, `undo`, `caps`)
+  `history.clear`, `undo`, `archive`, `caps`)
 - `src/rewind.ts` — pure planning: target resolution, surface range, candidate listing
 - `src/snapshot.ts` — checkpoint store (on-disk before-backups, restore/preview,
   bounded prune, journaled restore + `rollbackRestore` / `undoRestore`)
 - `src/history.ts` — rewind audit trail: per-workspace partitions (10 entries each),
   atomic writes, corrupt-file recovery, chain helpers for the one-shot undo
 - `src/snapshot-cleanup.ts` — cleanup policy + plugin-entry config persistence + auto-sweep throttle
+- `src/snapshot-policy.ts` — capture policy (binary/NUL sniffing, exclusion rules, byte budgets)
+- `src/marker.ts` — producer-owned marker source identity (`{ kind: 'dsh-rewind' }`)
+- `src/archive.ts` / `src/archive-store.ts` — conversation archive written at rewind time (the recovery path for folded dialogue)
+- `src/workspace-scan.ts` — first-seen workspace scan for unrecorded files
 - `src/locales.ts` — host i18n (`t()` renderer, `HostKey`)
 - `src/client/` — client plugin: per-message ↶ button, single-stage confirmation
   dialog (`confirm.ts`), the Settings page (`settings-section.tsx`), RPC client

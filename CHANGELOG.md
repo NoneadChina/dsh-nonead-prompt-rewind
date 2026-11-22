@@ -12,7 +12,7 @@ and the release steps are documented in
 
 ### 新增功能
 
-- **撤销会把回退掉的对话也送回来**：每次回退记录被遮蔽的用户与助手消息，撤销时按原序重新追加（新事件、原事件保持被遮蔽）；文件没有改动的纯对话回退同样可撤销。
+- **撤销会把回退掉的对话也送回来**：每次回退记录被遮蔽的用户与助手消息，撤销时在日志尾部追加一个**新回合**（`turn/start` … `turn/end`，turn 号取「最新日志 turn + 1,000,000」，避免与 agent 内存计数器分配的下一个真实回合撞号而把恢复内容排回旧位置）；文件没有改动的纯对话回退同样可撤销，当前回合尚未结束时撤销返回 `rewind/undo-busy`。
 - **快照采集默认只收源码与文本**：跳过 `.dsh-tmp`、构建/渲染目录、浏览器 profile，以及媒体、压缩包、模型、可执行文件等后缀；首见扫描的单文件阈值 1 MiB，工具写入前仍为 8 MiB，可用 `snapshotBinaries` 放开二进制。
 - **快照有了字节预算**：每会话 256 MiB、全库 2 GiB，超出后按最旧优先逐出到 80%；仍在保留窗口内的会话与撤销记录不会被逐出。
 - **新增回退地平线**：每会话保留最近 7 天或最新 30 组，更早目标只回退对话并在预览里标明文件不可用；有效窗口自动取「地平线天数」与「不活跃时间」的较大值。
@@ -38,7 +38,7 @@ and the release steps are documented in
 
 ### New Features
 
-- **Undo now brings the rewound conversation back too**: each rewind records the shadowed user and assistant messages, and undo re-appends them in order as new events (the originals stay shadowed); a conversation-only rewind with no file work is undoable as well.
+- **Undo now brings the rewound conversation back too**: each rewind records the shadowed user and assistant messages, and undo appends a **new turn** (`turn/start` … `turn/end`, numbered `newest logged turn + 1,000,000` so it cannot collide with the next real turn the agent's in-memory counter allocates) that republishes them in order; a conversation-only rewind with no file work is undoable as well, and an undo during an open turn returns `rewind/undo-busy`.
 - **Capture defaults to source and text**: `.dsh-tmp`, build/render directories, browser profiles, and media, archive, model and executable extensions are skipped; the first-seen scan caps a file at 1 MiB while tool writes keep the 8 MiB cap, and `snapshotBinaries` opts back into binary files.
 - **Snapshots have byte budgets**: 256 MiB per session and 2 GiB per store, evicting oldest-first down to 80%; sessions still inside the retention window and undo records are never evicted.
 - **A retention horizon was added**: each session keeps the last 7 days or the newest 30 anchor groups; older targets rewind the conversation only and the preview marks their files unavailable. The effective window is the larger of the horizon and the inactivity limit.

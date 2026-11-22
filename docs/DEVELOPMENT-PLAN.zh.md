@@ -1,6 +1,6 @@
 # 开发计划：当前状态与后续路线图
 
-> 本文件描述 **0.5.1** 的基线与下一步工作，不记录已完成的过程叙事。
+> 本文件描述 **0.6.0** 的基线与下一步工作，不记录已完成的过程叙事。
 > 机制细节见 [开发指南](DEVELOPMENT-GUIDE.zh.md)；变更历史见 [CHANGELOG](../CHANGELOG.md)；
 > 兼容性结论见 [compat/audit](compat/audit.md)。
 
@@ -8,14 +8,14 @@
 
 | 项 | 现状 | 事实来源 |
 | --- | --- | --- |
-| 版本 | `0.5.1` | [package.json](../package.json) |
+| 版本 | `0.6.0` | [package.json](../package.json) |
 | 定位 | 同窗口就地回退对话 + 写前快照还原工作区文件 | [README](../README.md) |
 | 包形态 | 双面插件（host `lib/index.js` + client `lib/client.js`），一个 bundle row | `cordis.patch.yml`、`package.json` |
 | 运行环境 | Node `>=24.9.0`，DSH `>=0.2.1-0 <0.3.1-0` | `engines` |
-| 能力面 | 4 个命令、6 个 RPC 端点、3 个 UI 槽位、8 种界面语言 | `src/index.ts`、`src/client/index.ts` |
+| 能力面 | 4 个命令、7 个 RPC 端点、4 个 UI 槽位、8 种界面语言 | `src/index.ts`、`src/client/index.ts` |
 | 交互 | 单阶段确认（无模式选择），对话与文件同时回退 | `src/client/confirm.ts`、`src/index.ts` |
-| 存储上限 | 单文件 8 MiB、每会话 100 个消息组、每工作区 10 条历史 | `src/snapshot.ts`、`src/history.ts` |
-| 测试规模 | 42 个 `*.test.ts`；`verify-host` 17 组 | `tests/`、`scripts/verify-host.mjs` |
+| 存储上限 | 单文件 8 MiB（自动首见扫描 1 MiB）、每会话 100 个消息组、每工作区 10 条历史 | `src/snapshot.ts`、`src/snapshot-policy.ts`、`src/history.ts` |
+| 测试规模 | 52 个 `*.test.ts`；`verify-host` 编号组 `1`…`17`（含 `4b`–`4l`、`8b`–`8c`、`12b`）、137 个 `check(...)` | `tests/`、`scripts/verify-host.mjs` |
 | 全检命令 | `npm run check`（typecheck + build + test + verify:host + pack --dry-run） | `package.json` |
 | 验证基线 | devDependencies 钉 `0.2.2-rc.5` | `package.json`、[compat/audit](compat/audit.md) |
 | 发布自动化 | **缺失**：仓库没有 `.github/workflows/` | 仓库根目录 |
@@ -23,7 +23,7 @@
 
 ### 已知缺口
 
-1. **没有 CI，发布全靠手动**：仓库没有 `.github/workflows/`；[release/release.md](release/release.md) 已如实写明"手动发布、Trusted Publisher 未配置"，因此每次发布都依赖本地 `npm run check` 与人工步骤。另有一处发布前置问题：`scripts/changelog-extract.mjs` 对当前 `CHANGELOG.md` 的 `0.5.1` 块校验失败（`Full Changelog` 行不是独占一行的 URL），发布前必须先修 CHANGELOG 块。
+1. **没有 CI，发布全靠手动**：仓库没有 `.github/workflows/`；[release/release.md](release/release.md) 已如实写明"手动发布、Trusted Publisher 未配置"，因此每次发布都依赖本地 `npm run check` 与人工步骤。`node scripts/changelog-extract.mjs v0.6.0` 当前已通过（0.5.1 时代那次 `Full Changelog` 行校验失败已修好并写进模板）。
 2. **0.2.1 线未逐版本验证**：`engines.dsh` 下限是 `0.2.1-0`，但 devDependencies 与端到端验证只覆盖 `0.2.2-rc.5`。低版本线依赖 `caps` 运行时探测降级，缺少"每个 0.2.1 patch 上实际能跑到哪一步"的记录。
 3. **验证口径**：`compat/audit.md` 的 `Version scope` 已写明"验证基线 = `0.2.2-rc.5`、0.2.1 线靠运行时能力探测降级"（2026-11-04 补记）；仍需在每次基线前进时同步该段与本文 §1 的数字。
 4. **界面语言只有 8 种且译文为 AI 生成**；新增语言目前需要同时改两份字典 + 一个 `locale/*.json`，没有生成器或校验清单。
@@ -46,7 +46,7 @@
 - 存在发布工作流：触发于 `v*` tag → 校验 tag 与 `package.json` 版本一致 → 跑全检 → 先跑 `node scripts/changelog-extract.mjs <tag>`（失败即中止）→ `npm publish --provenance` → 用抽取结果创建 GitHub Release；已发布版本跳过（幂等）。
 - `release/release.md` 与 `.github/workflows/` 实况一致（不再需要"未来工作流"清单），Trusted Publisher 段落在配置完成后可用。
 - 一次 `workflow_dispatch` 干跑（不发布）能跑通。
-- 发布前置：`node scripts/changelog-extract.mjs v0.5.1` 先通过（需要修 CHANGELOG 的 `Full Changelog` 行）。
+- 发布前置：`node scripts/changelog-extract.mjs v0.6.0` 先通过（当前已通过）；注意 `v0.6.0` 目前**尚未打 tag**，最近 tag 是 `v0.5.5`。
 
 **第一步**：在仓库根建 `.github/workflows/ci.yml`，内容为 `actions/checkout@v4` + `actions/setup-node@v4`（`node-version: 24`）+ `npm ci` + `npm run check`；先只做 CI，不碰发布，跑通一次 PR 再继续。
 
@@ -106,7 +106,7 @@
 
 **验收标准**
 
-- 新增 `scripts/verify-docs.mjs`（当前不存在）：校验两份中文文档与 docs/README 里所有**相对链接**存在；校验文档中出现的版本号、`8 MiB`、`100`、`10`、`42`、`8 种语言` 与 `package.json` / 源码常量 / `tests/` 实况一致。
+- 新增 `scripts/verify-docs.mjs`（当前不存在）：校验两份中文文档与 docs/README 里所有**相对链接**存在；校验文档中出现的版本号、`8 MiB`、`100`、`10`、`52`、`8 种语言` 与 `package.json` / 源码常量 / `tests/` 实况一致。
 - `npm run check` 或独立的 `npm run verify:docs` 跑它；CI（2.1）里也要跑。
 - [开发指南](DEVELOPMENT-GUIDE.zh.md)、[docs/README](README.md)、[AGENTS](../AGENTS.md) 三处的模块清单不再互相矛盾（至少被脚本覆盖的部分）。
 
@@ -132,7 +132,7 @@
 
 以下项在当前产品定位下**明确不做**；若要改变，先改定位与 [README](../README.md) 的"明确不做的事"。
 
-- **不恢复对话**：撤销只还原文件；被撤回的对话节点已移出 surface，不会"复活"。
+- **不重放工具调用**：撤销会把被回退的 user/assistant 文本作为一个**新回合**重新发回（surface 没有 `replace` 的反操作；日志保留两份），但工具调用与结果不会重跑——恢复的是对话可见内容，不是执行历史。
 - **不做整树 / Git 级快照**：不接管 git，也不备份整个工作区。
 - **不追踪子代理会话**，也不在子代理内提供回退面。
 - **不做 fork / 分支回退**：宿主已有"在新对话中分支"。

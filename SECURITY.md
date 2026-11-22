@@ -89,6 +89,17 @@ request derives its context from the target onward. The marker's content is a
 constant, so it carries no untrusted text into the model context; the client
 hides the `[target, marker]` span from the rendered transcript.
 
+An **undo** is equally append-only. It never edits the earlier events: it writes
+the files back from the plugin's own restore journal and, for the dialogue half,
+appends a fresh `turn/start` … `turn/end` block that republishes the withdrawn
+user/assistant text. Those replay events are new records beside the originals
+(which stay marked as shadowed), so the audit trail keeps both copies. Replayed
+assistant text is tagged with the plugin's own `{ provider: 'prompt-rewind',
+model: 'restored' }` source, which makes the origin obvious in the log, and tool
+calls are never replayed. The host refuses the dialogue half with
+`rewind/undo-busy` while a turn is still open, so a replay can never be spliced
+into a live run.
+
 ## Filesystem containment
 
 - **Store root**: `<dsh home>/rewind-snapshots/` by default (resolved via
