@@ -889,6 +889,27 @@ function turnIsOpen(session: Session): boolean {
 }
 
 /**
+ * True when the log ends inside a compaction transaction the load validator
+ * has not forgiven.
+ *
+ * The load validator rejects any `turn/start`/`turn/end` that crosses an open
+ * compaction (`turn/start crosses an open compaction`). Runtime `append` does
+ * NOT check that relation, so writing a replay turn while `/compact` is in
+ * flight would commit an event that only fails on the next reload. A
+ * `session/end-seed` marks the then-open compaction as abandoned, which the
+ * validator treats as closed — mirror that here so a stale compaction does not
+ * block an undo forever.
+ */
+function compactionIsOpen(session: Session): boolean {
+  let open = false
+  for (const event of loggedEvents(session)) {
+    if (event.type === 'compaction/start') open = true
+    else if (event.type === 'compaction/end' || event.type === 'session/end-seed') open = false
+  }
+  return open
+}
+
+/**
  * Republish a withdrawn dialogue as ONE new turn at the end of the log.
  *
  * This is the undo path. A surface `replace` has no inverse, and appending bare
@@ -917,13 +938,16 @@ export function replayDialog(
   if (turnIsOpen(session)) {
     throw new Error('cannot replay a dialogue while a turn is still open')
   }
+  if (compactionIsOpen(session)) {
+    throw new Error(t('error.replayCompactionOpen'))
+  }
   // Both counters are decided BEFORE the first append: once `turn/start` is
   // committed, an agent whose counter cannot advance leaves behind a turn it is
   // bound to reuse — a log that no longer reloads. Failing here costs the
   // dialogue half and leaves the file half intact.
   const counter = agent as AgentTurnCounter | undefined
   const lastTurn = counter === undefined ? undefined : agentLastTurn(counter)
-  if (counter !== undefined && lastTurn === undefined) {
+  if (counter !== undefined && (lastTurn === undefined || typeof counter.setPhase !== 'function')) {
     throw new Error(t('error.replayAgentOutOfSync'))
   }
   const turn = nextTurnNumber(session)
@@ -972,6 +996,11 @@ export function replayDialog(
     }
     closeStep()
   } finally {
+    // A throw between a `step/start` and its `step/end` (a rejected message
+    // payload, a session detached mid-replay) must not leave an open step in
+    // front of `turn/end`: no reload accepts that pairing. Close the loop's own
+    // step first so the turn this function opened is always well-formed.
+    closeStep()
     session.append('turn/end', { turn, reason: { kind: 'completed' } })
   }
   // The log now sits a turn ahead of the agent's memory. Move the counter in the

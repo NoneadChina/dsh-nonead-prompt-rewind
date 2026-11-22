@@ -302,6 +302,21 @@ the button can be pressed again once the turn closes. A rewind that only shadowe
 dialogue (no file actions) still writes a journal with `actions: []` plus `dialog`, so a
 conversation-only rewind can be undone exactly once. A journal without `dialog` (legacy)
 remains file-only.
+
+**A replay never starts inside a compaction.** The load validator rejects any
+`turn/start`/`turn/end` that crosses an open `compaction/start` transaction
+(`SessionFormatError: turn/start crosses an open compaction`). Runtime `append` does not
+check that relation, so a replay written while `/compact` is in flight would commit an
+event that only fails on the next reload. The undo therefore reads the log first and
+refuses the dialogue half while a compaction is open (the file half still restores). A
+`session/end-seed` marks the then-open compaction as abandoned, which the validator
+forgives, so a stale transaction does not block an undo forever.
+
+**The replayed step is closed before the turn.** The replay writes inside a
+`try/finally`, and the `finally` closes an open step before `turn/end`. If a message
+append throws in the middle of a prompt/answer pair, the log still ends with a matched
+`step/end` … `turn/end` instead of a `turn/end` over an open step — the shape the
+validator reports as `turn/end does not match the open turn with no open step`.
 ## 9. Rewind history partition
 History is a separate root with a separate schema and lifetime:
 

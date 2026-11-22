@@ -17,6 +17,7 @@
  *     roll it back.
  */
 import { describe, expect, it } from 'vitest'
+import { CompactionId } from '@deepseek-ai/dsh-compaction'
 import { Session, SessionId, type SessionEvent, type SessionSeq } from '@deepseek-ai/dsh-session'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -190,5 +191,53 @@ describe('dialog capture and replay', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  it('refuses to replay inside an open compaction transaction', () => {
+    const session = Session.create(SessionId('dialog-compaction'))
+    appendTurn(session, 1)
+    appendTurn(session, 2)
+    // `/compact` opens the transaction before it writes its summary. The load
+    // validator rejects a `turn/start` that crosses it, but runtime `append`
+    // does not check that relation — so replaying here would commit an event
+    // that only fails on the next reload. Fail before the first append.
+    session.append('compaction/start', { compactionId: CompactionId('comp-open'), turn: null })
+    const before = session.snapshotEvents().length
+    const dialog = [{ role: 'user' as const, content: [{ type: 'text', text: 'q' }] }]
+    expect(() => replayDialog(session, dialog)).toThrow()
+    expect(session.snapshotEvents().length).toBe(before)
+  })
+
+  it('closes the replayed step before turn/end when a message append throws', () => {
+    const session = Session.create(SessionId('dialog-throw'))
+    appendTurn(session, 1)
+    const dialog = [
+      { role: 'user' as const, content: [{ type: 'text', text: 'q' }] },
+      { role: 'assistant' as const, content: [{ type: 'text', text: 'a' }] },
+    ]
+    // Make the answer append fail mid-step. Before the fix the `finally` wrote
+    // `turn/end` while the step was still open, and no reload accepts that
+    // pairing ("turn/end does not match the open turn with no open step").
+    const patchable = session as unknown as { append: (...args: unknown[]) => unknown }
+    const original = patchable.append.bind(session)
+    let injected = false
+    patchable.append = (type: unknown, data: unknown, ...opts: unknown[]) => {
+      if (type === 'assistant/message' && !injected) {
+        injected = true
+        throw new Error('injected append failure')
+      }
+      return original(type, data, ...opts)
+    }
+
+    expect(() => replayDialog(session, dialog)).toThrow('injected append failure')
+
+    const events = session.snapshotEvents()
+    const open: string[] = []
+    for (const event of events) {
+      if (event.type === 'turn/start' || event.type === 'step/start') open.push(event.type)
+      if (event.type === 'step/end') expect(open.pop()).toBe('step/start')
+      if (event.type === 'turn/end') expect(open.pop()).toBe('turn/start')
+    }
+    expect(open).toEqual([])
   })
 })

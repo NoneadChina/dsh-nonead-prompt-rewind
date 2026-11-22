@@ -13,6 +13,8 @@ and the release steps are documented in
 - **撤销重放不再让会话无法重新加载**：0.6.0 把回放的 turn 号写成「最新日志 turn + 1,000,000」以避开 agent 的内存计数器，但 DSH 的会话校验要求 turn 号从 1 起严格连续、且只在**重新加载**时才校验——于是每次「回退 + 撤销」都会把日志写成一份下次打开就报 `SessionFormatError: turn/start does not open the expected turn` 的文件。现在改为写入日志的**下一个** turn 号，并在提交 `turn/start` **之前**同时校验、推进活动 agent 的回合计数器（`phase.lastTurn`）；agent 未暴露可用计数器时**先失败、不落盘任何回放事件**，由页面提示重载后重试（文件半仍然成功）。
 - **已损坏的会话可以修回**：`scripts/session-decode.mjs` 解码 → 按出现顺序重排 `turn`/`step` → `scripts/session-encode.mjs` 重新编码，即可让受影响的日志重新满足校验；原文件保持备份。
 - **回退标记的 `sourceEventSeqs` 一律写扁平数字**：加载校验要求它逐个覆盖被 replace 遮蔽的每一个 surface 节点；旧版把分组（`[start, end]`）原样写进日志，重载时同样报 `replacement sourceEventSeqs omit a shadowed surface node`。现在写入前用 `flattenShadowedSeqs` 展开、为空即拒绝；新增集成用例钉住「扁平、无重复、全部早于标记、覆盖整个区间」的形状。附带修法：已有日志里的分组引用可按闭区间展开并补齐缺失节点后重新编码。
+- **压缩进行中不再写入回放回合**：加载校验禁止 `turn/start`/`turn/end` 跨越未关闭的 `compaction/start`（`turn/start crosses an open compaction`），而运行时 `append` 不检查这条关系——若在 `/compact` 途中撤销，日志只会在下次重载时才失败。撤销现在先读日志，压缩未结束就拒绝对话回填（文件半照常恢复）；`session/end-seed` 之后视为已放弃的压缩不再阻塞。
+- **回放中途失败也会补齐 step/end**：回放的 `finally` 在写 `turn/end` 前先关闭仍打开的 step，避免消息 append 抛错时留下「有 turn/end、无 step/end」的日志（加载报 `turn/end does not match the open turn with no open step`）。新增 `tests/log-integrity.test.ts` 用宿主等价校验器覆盖「一次回退+撤销+再回退」「三轮回退/撤销」与 turn 跳号的对照用例。
 
 ## [0.6.0] - 2026-11-21
 
