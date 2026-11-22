@@ -19,6 +19,7 @@
 | `npm run typecheck` | tsc --noEmit (host / client / client-test configs) |
 | `npm test` | vitest |
 | `npm run verify:host` | end-to-end host verification (full check suite) |
+| `npm run verify:compat` | DSH version matrix: pins each core line, then typecheck + test |
 
 `@deepseek-ai/*` dependencies stay external at build time — the DSH host resolves
 them at runtime, so the published tarball does not carry them.
@@ -44,7 +45,8 @@ them at runtime, so the published tarball does not carry them.
   (`host-rpc.ts`), hidden-span computation
 - `scripts/` — `build.mjs` (artifacts), `update-badge.mjs` (badge), `verify-host.mjs` (host verification),
   `changelog-extract.mjs` (release-note extraction),
-  `probe-caps.mjs` (static capability probe), `session-decode.mjs` / `session-encode.mjs` (log codec)
+  `probe-caps.mjs` (static capability probe), `session-decode.mjs` / `session-encode.mjs` (log codec),
+  `verify-compat.mjs` (DSH release matrix)
 - `docs/` — maintainer documentation, indexed by `docs/README.md`: `compat/` (compatibility audit,
   file-rewind boundary, browser diagnostics), `release/` (release workflow, notes template), plus
   `architecture.md`, `format.md`, `harness-reference.md`, the Chinese `DEVELOPMENT-GUIDE.zh.md`
@@ -57,9 +59,16 @@ them at runtime, so the published tarball does not carry them.
 - Commit **one logical change per commit**: finish one feature/fix, run `npm run
   check`, then commit and push before starting the next change.
 - Every change must pass `npm run check` before it is committed.
-- DSH compatibility is iteration-driven: `main` always adapts to the **latest**
-  DSH line — cross-version compatibility is not kept, and a shipped DSH line is
-  preserved only on its release branch (see `docs/release/release.md`).
+- DSH compatibility is iteration-driven in the sense that `main` never carries a
+  shim for a contract the host has already dropped. What it *does* keep is a
+  verified floor: `engines.dsh` is a range (`>=0.2.1-0 <0.3.1-0`) and every
+  installable release inside it must pass `npm run verify:compat` (see
+  `docs/compat/versions.md`). A shim is allowed only for a contract that is
+  verified live in more than one released line — today that is the attachment
+  read shape (`readAttachment(structured)` on 0.2.2, `readAttachment(id)` on
+  0.2.1). Unreleased lines are never claimed: the 0.2.0 line cannot be
+  installed at all (it lacks `dsh-error` and `dsh-working-directory`), and no
+  0.3.x release exists yet.
 
 ## Further reading
 - Interfaces / compatibility: `docs/harness-reference.md`, `docs/compat/audit.md`

@@ -282,8 +282,10 @@ the plugin still rewinds by command — only the graphical surfaces degrade.
 - **Admission boundary.** `engines.node` is `>=24.9.0` and `engines.dsh` is `>=0.2.1-0 <0.3.1-0`;
   every `@deepseek-ai/dsh-*` peer uses the same range and is optional. A runtime outside the range
   is refused at load rather than admitted into unadapted code. `devDependencies` pin
-  `0.2.2-rc.5`, the verified line; the range below it stays admitted because optional
-  surfaces are read through the runtime `caps` probe rather than a version branch.
+  `0.2.2-rc.5`, the latest released line; each claimed release inside the range is verified by
+  `npm run verify:compat`, which pins the tree to one line and reruns every typecheck config plus
+  the suite (results and the 0.2.0 line's recorded gap: [compat/versions.md](compat/versions.md)).
+  Optional surfaces are read through the runtime `caps` probe rather than a version branch.
 - **Runtime capability probe.** `caps` reports `history`, `undo` and `fileCheckpointing`; the
   settings page states a missing capability instead of hiding the loss.
 - **Optional seams degrade, they do not break the feature.** Each command registration is
@@ -301,9 +303,12 @@ the plugin still rewinds by command — only the graphical surfaces degrade.
   paths and pin the invariants; `scripts/verify-host.mjs` boots the built host half on a real
   cordis context and drives rewind plus checkpoint end to end; `scripts/probe-caps.mjs` reports
   what an installed DSH line ships. Findings live in [compat/audit.md](compat/audit.md).
-- **No cross-line promise.** The declared range is the admission boundary, but `main` always
-  adapts to the latest DSH line; a shipped line is preserved on its release branch (see
-  [release/release.md](release/release.md)).
+- **One verified shim, no cross-line promise.** The declared range is the verified floor, not a
+  promise to keep old contracts alive: `main` adapts to the newest released line, and a shim exists
+  only where two *claimed* releases genuinely disagree (today: `readAttachment` takes a structured
+  reference on 0.2.2 and the bare id on 0.2.1). An unreleased or uninstallable line is never
+  claimed — see [compat/versions.md](compat/versions.md). A shipped line is preserved on its release
+  branch (see [release/release.md](release/release.md)).
 ## 9. Related reading
 [format.md](format.md) (every durable file, field by field) ·
 [harness-reference.md](harness-reference.md) (DSH subsystems and seams) ·

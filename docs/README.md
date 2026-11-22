@@ -16,7 +16,7 @@
 | Change the code | [DEVELOPMENT-GUIDE.zh.md](DEVELOPMENT-GUIDE.zh.md) (Chinese) → [architecture.md](architecture.md) |
 | Know the on-disk format before touching storage | [format.md](format.md) |
 | Find the harness interface behind a call | [harness-reference.md](harness-reference.md) |
-| Judge compatibility or explain a known limitation | [compat/audit.md](compat/audit.md), [compat/tracking-boundary.md](compat/tracking-boundary.md) |
+| Judge compatibility or explain a known limitation | [compat/audit.md](compat/audit.md), [compat/versions.md](compat/versions.md), [compat/tracking-boundary.md](compat/tracking-boundary.md) |
 | Configure or script snapshot cleanup | [snapshot-auto-cleanup.md](snapshot-auto-cleanup.md) |
 | Cut a release | [release/release.md](release/release.md), [release/notes-template.md](release/notes-template.md) |
 | Plan the next iteration | [DEVELOPMENT-PLAN.zh.md](DEVELOPMENT-PLAN.zh.md) (Chinese) |
@@ -33,6 +33,7 @@
 | [DEVELOPMENT-PLAN.zh.md](DEVELOPMENT-PLAN.zh.md) | Current baseline and the next-iteration roadmap, each item with acceptance criteria | maintainers |
 | [snapshot-auto-cleanup.md](snapshot-auto-cleanup.md) / [.zh.md](snapshot-auto-cleanup.zh.md) | Snapshot auto-cleanup policy, command, state file | users / maintainers |
 | [compat/audit.md](compat/audit.md) | Compatibility definition, invariants, open items, coverage gaps | maintainers |
+| [compat/versions.md](compat/versions.md) | Which DSH releases are claimed, and the `verify:compat` evidence for each | maintainers |
 | [compat/tracking-boundary.md](compat/tracking-boundary.md) / [.zh.md](compat/tracking-boundary.zh.md) | Which files a rewind restores and which it cannot | users / maintainers |
 | [compat/diagnostics.md](compat/diagnostics.md) / [.zh.md](compat/diagnostics.zh.md) | Browser diagnostics switch, startup identity line, anomaly alerts | users / maintainers |
 | [release/release.md](release/release.md) | Release facts, version/tag/dist-tag rules, npm-side setup | maintainers |

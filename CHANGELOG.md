@@ -31,6 +31,7 @@ and the release steps are documented in
 ### 其他变更
 
 - **自动清理不再只跑一次**：由每个挂载只检查一次改为每小时复审，并在超出预算时立即触发；活动会话保护从一个会话扩展到所有在驱动会话。
+- **依赖声明补全，版本地板可验证**：`peerDependencies` 补上插件实际 import 的 5 个包（`dsh-agent`、`dsh-api-session-controller`、`dsh-client-ui-conversation`、`dsh-client-ui-input-trigger`、`dsh-client-ui-session`）；新增 `npm run verify:compat`，把依赖分别钉到 `0.2.1-rc.5` 与 `0.2.2-rc.5` 各跑三套类型检查与全量测试（两条线均通过），附件读取对两版签名自适应。`0.2.0` 线缺 `dsh-error` / `dsh-working-directory` 且 token-meter 尚无 marker-aware fold，`0.3.x` 尚未发布，两者都不在声明范围内。
 
 ---
 
@@ -57,6 +58,7 @@ and the release steps are documented in
 ### Chores
 
 - **Automatic cleanup no longer runs once per mount**: it re-checks hourly and fires immediately when a budget is exceeded, and active-session protection covers every driving session instead of one.
+- **Package declarations are complete and the version floor is verifiable**: `peerDependencies` now names the five DSH packages the plugin actually imports (`dsh-agent`, `dsh-api-session-controller`, `dsh-client-ui-conversation`, `dsh-client-ui-input-trigger`, `dsh-client-ui-session`), and `npm run verify:compat` pins the tree to `0.2.1-rc.5` and `0.2.2-rc.5` in turn, rerunning every typecheck config and the whole suite (both lines pass). The attachment read adapts to both signatures. The `0.2.0` line is not claimed — it lacks `dsh-error` / `dsh-working-directory` and its token meter predates the marker-aware fold — and no `0.3.x` release exists yet.
 
 **Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.5.5...v0.6.0
 

@@ -63,7 +63,7 @@
 | Node | `>=24.9.0` | `engines.node` |
 | DSH | `>=0.2.1-0 <0.3.1-0` | `engines.dsh`（自 DSH 0.2.1-alpha.4 起是唯一准入判据） |
 | 验证基线 | devDependencies 全部钉 `0.2.2-rc.5` | [package.json](../package.json)；记录在 [compat/audit](compat/audit.md) 的 Targeted version |
-| 兼容口径 | 基线前进不收缩声明范围：`0.2.2-alpha.2` 与 `0.2.1-0` 线仍准入，靠 `caps` 运行时探测降级 | [compat/audit](compat/audit.md) `Version scope` |
+| 兼容口径 | 声明范围是**经 `verify:compat` 验证的地板**，不是保留旧契约的承诺：`0.2.1-rc.5` 与 `0.2.2-rc.5` 均通过三套 typecheck + 全量测试；`0.2.0` 线缺 `dsh-error`/`dsh-working-directory`、token-meter 也还没有 marker-aware fold，故不声明；`0.3.x` 尚未发布，`engines.dsh` 在 `0.3.1-0` 处封顶 | [compat/versions](compat/versions.md) |
 | 仓库自动化 | **没有** `.github/workflows/` | 仓库根目录实况；见 PLAN 待办 |
 | 界面语言 | 8：`en` `zh` `ja` `es` `fr` `de` `ru` `pt` | `HOST_DICTS` / `CLIENT_DICTS` |
 | 测试规模 | `tests/` 下 52 个 `*.test.ts` | 目录实况 |
@@ -762,6 +762,7 @@ completed journal 就是这份撤销记录：`prune` 只回收 `rolled-back` 的
 | `npm run build` | esbuild 产物 + `.d.ts` |
 | `npm test` | vitest 全量 |
 | `npm run verify:host` | 端到端宿主验证 |
+| `npm run verify:compat` | DSH 版本矩阵：逐条把 `@deepseek-ai/dsh-*` 钉到某个发布线，跑三套 typecheck + vitest，结束恢复基线 |
 | `npm pack --dry-run` | 看发布清单（`prepack` 会先 build） |
 
 ### 7.2 类型检查的三套配置
