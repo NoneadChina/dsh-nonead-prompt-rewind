@@ -1,6 +1,6 @@
 # dsh-nonead-prompt-rewind
 
-DeepSeek Harness 插件：**一键就地回退对话到任意更早的用户消息**。<br />
+DeepSeek Harness 插件：**一键就地回退对话到任意更早的用户消息以及修改的文档，也可对此次的撤销进行返回操作**。<br />
 同窗口内完成，不新建分支、不换窗口，可一并还原工作区文件——即完整的 Claude Code `/rewind` 语义。
 
 [English](README.en.md) | 中文
