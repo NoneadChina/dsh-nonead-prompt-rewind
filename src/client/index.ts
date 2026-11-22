@@ -68,8 +68,12 @@ export const inject = ['slots', 'sessions', 'locale', 'commandUi', 'configForms'
 
 const NS = 'rewind'
 
-/** The complete durable image reference the session face's image read verifies. */
-type DurableImageRef = Parameters<SessionFace['readAttachment']>[0]
+/** The attachment read's structural result, shared by every harness line. */
+interface AttachmentRead {
+  readonly ok: boolean
+  readonly value?: { readonly data: unknown }
+  readonly error?: unknown
+}
 
 /**
  * Structural face of the `uiConversation` service: per-session
@@ -248,6 +252,34 @@ export function apply(ctx: ClientContext): void {
     }
 
     /**
+     * Reads one durable attachment through whichever `readAttachment` contract
+     * the running harness declares: 0.2.2 verifies the complete structured
+     * reference, while 0.2.1 takes the bare attachment id. A structured call
+     * the older signature rejects (returned error or thrown) is retried by id,
+     * so an image-bearing refill degrades instead of dropping the image.
+     */
+    const readAttachment = async (session: SessionFace, ref: MessageImageRef): Promise<AttachmentRead> => {
+      const call = session.readAttachment as unknown as (argument: unknown) => Promise<AttachmentRead>
+      const structured = {
+        attachmentId: ref.attachmentId,
+        mediaType: ref.mediaType,
+        bytes: ref.bytes,
+        width: ref.width,
+        height: ref.height,
+        ...(ref.name === undefined ? {} : { name: ref.name }),
+      }
+      let first: AttachmentRead
+      try {
+        first = await call(structured)
+      } catch (error) {
+        first = { ok: false, error }
+      }
+      if (first.ok) return first
+      const retried = await call(ref.attachmentId)
+      return retried.ok ? retried : first
+    }
+
+    /**
      * The composer image restorer: puts a withdrawn message's durable image
      * references back into that session's composer draft. `readAttachment`
      * takes the complete reference the host verifies; `createDrafts` +
@@ -281,19 +313,12 @@ export function apply(ctx: ClientContext): void {
           continue
         }
         try {
-          const result = await session.readAttachment({
-            attachmentId: ref.attachmentId as DurableImageRef['attachmentId'],
-            mediaType: ref.mediaType as DurableImageRef['mediaType'],
-            bytes: ref.bytes,
-            width: ref.width,
-            height: ref.height,
-            ...(ref.name === undefined ? {} : { name: ref.name }),
-          })
+          const result = await readAttachment(session, ref)
           if (!result.ok) throw result.error
           // The face types its bytes as a plain `Uint8Array`, which newer TS
           // lib types widen to `ArrayBufferLike`; the host always hands over an
           // ArrayBuffer-backed view, so `File` takes it without a copy.
-          const bytes = result.value.data as Uint8Array<ArrayBuffer>
+          const bytes = result.value?.data as Uint8Array<ArrayBuffer>
           files.push(new File([bytes], ref.name ?? `image-${index + 1}.${extension}`, { type: ref.mediaType }))
         } catch (error) {
           rewindLog.warn('refill', `image read threw for ${ref.attachmentId}`, error)
