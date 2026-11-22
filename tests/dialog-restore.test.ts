@@ -1,15 +1,16 @@
 /**
- * Undo restores the dialogue, not only the files. The session log is
- * append-only and a rewind shadows nodes with a replace op that has no
- * inverse, so an undo republishes the preserved messages as NEW events.
- * These tests pin both halves:
+ * A rewind withdraws a span of dialogue with a surface `replace`, which has no
+ * inverse: the log stays append-only and the shadowed events stay shadowed.
+ * These tests pin what an undo may and may not do about that:
  *
- *   - `collectDialog` keeps only human user messages and assistant text (no
- *     tool traffic), and `replayDialog` puts the prompts back on the surface
- *     after a real replace cut (the answers stay journal-only, because a
- *     fabricated turn would collide with the agent's next real turn);
- *   - a conversation-only restore still writes a journal (so it can be
- *     undone) and `readRestoreJournal` hands the dialog back to the caller.
+ *   - `collectDialog` keeps the withdrawn text (human prompts + assistant text,
+ *     no tool traffic) so the journal can audit it;
+ *   - the cut really removes both sides from the surface, and an undo does NOT
+ *     republish them — replaying would append NEW events with no Turn location
+ *     and would push later output out of order. Releasing the cut in the Chat
+ *     view is the undo path (covered by visibility tests);
+ *   - a conversation-only restore still writes a journal, so the one undo can
+ *     roll it back.
  */
 import { describe, expect, it } from 'vitest'
 import { Session, SessionId, type SessionEvent, type SessionSeq } from '@deepseek-ai/dsh-session'
@@ -17,8 +18,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SnapshotStore } from '../src/snapshot.ts'
-import { collectDialog, replayDialog } from '../src/index.ts'
-import { appendTurn, applyRewind, rewindMarker } from './helpers.ts'
+import { collectDialog } from '../src/index.ts'
+import { appendTurn, rewindMarker } from './helpers.ts'
 import { planRewind } from '../src/rewind.ts'
 
 /** Visible text of one surface node (user or assistant). */
@@ -38,8 +39,8 @@ function surfaceText(session: Session, seq: number): string {
   return ''
 }
 
-describe('dialog replay', () => {
-  it('collects text messages and republishes them after a real rewind cut', () => {
+describe('dialog capture', () => {
+  it('keeps the withdrawn text in the journal and leaves the cut alone', () => {
     const session = Session.create(SessionId('dialog-session'))
     appendTurn(session, 1)
     appendTurn(session, 2)
@@ -56,32 +57,20 @@ describe('dialog replay', () => {
     expect(JSON.stringify(dialog[2]!.content)).toContain('question 2')
     expect(JSON.stringify(dialog[3]!.content)).toContain('answer 2')
 
-    session.append('user/message', rewindMarker(), {
+    const marker = session.append('user/message', rewindMarker(), {
       surfaceOp: { op: 'replace', startSeq: plan.surfaceStart as SessionSeq, endSeq: plan.surfaceEnd as SessionSeq },
       sourceEventSeqs: [...plan.shadowedSeqs] as SessionSeq[],
     })
-    const before = session.surface.nodes.map(seq => surfaceText(session, seq)).join('\n')
-    expect(before).not.toContain('question 1')
-    expect(before).not.toContain('answer 1')
-    expect(before).not.toContain('question 2')
-
-    expect(replayDialog(session, dialog)).toBe(2)
     const after = session.surface.nodes.map(seq => surfaceText(session, seq)).join('\n')
-    expect(after).toContain('question 1')
-    expect(after).toContain('question 2')
-    // The answer text stays in the journal for the history UI, but it is never
-    // injected into the live transcript: a fabricated turn collides with the
-    // next real turn (the agent owns that counter) and garbles the view.
+    expect(after).not.toContain('question 1')
     expect(after).not.toContain('answer 1')
+    expect(after).not.toContain('question 2')
     expect(after).not.toContain('answer 2')
-    const injectedAssistant = session.snapshotEvents().filter(
-      event =>
-        event.type === 'assistant/message' &&
-        (event.data as { message?: { source?: { provider?: unknown } } }).message?.source?.provider === 'dsh-rewind',
-    )
-    expect(injectedAssistant).toHaveLength(0)
-    const turns = session.snapshotEvents().filter(event => event.type === 'turn/start')
-    expect(turns).toHaveLength(2)
+
+    // The marker's seq is what the history entry stores as `markerSeq`; with the
+    // target seq it identifies the cut the client releases on undo.
+    expect(typeof marker.seq).toBe('number')
+    expect(marker.seq).toBeGreaterThan(plan.targetSeq)
   })
 
   it('keeps a journal for a conversation-only restore and undoes it', async () => {

@@ -157,6 +157,8 @@ export interface HistoryEntryView {
   readonly sessionTitle?: string
   readonly at: number
   readonly targetSeq: number
+  /** Log seq of the rewind marker; with targetSeq it identifies the cut. */
+  readonly markerSeq?: number
   readonly hadFiles: boolean
   readonly outcome: 'success' | 'failed' | 'partial'
   readonly shadowedEvents: number

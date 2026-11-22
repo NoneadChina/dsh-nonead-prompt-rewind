@@ -3,10 +3,15 @@
  * `[target, marker]` span into `visibility: 'hidden'` before the Chat builder
  * computes `order`, while keeping the nodes in the store for composer refill.
  */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CommandNode } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { ENGINE_COMMAND, rewindCutsOf, type ChatConversationViewNode, type RewindCut } from '../src/client/hidden.ts'
-import { installChatViewVisibility, RewindVisibilityBuilder } from '../src/client/visibility.ts'
+import { installChatViewVisibility, refreshRewindVisibility, RewindVisibilityBuilder } from '../src/client/visibility.ts'
+import { resetUndoneCutKeys, setUndoneCutKeys } from '../src/client/undo-state.ts'
+
+afterEach(() => {
+  resetUndoneCutKeys()
+})
 
 type Node = ChatConversationViewNode
 
@@ -183,6 +188,43 @@ describe('RewindVisibilityBuilder', () => {
     nodes.push(user('u30', 30, 2, 30))
     const snapshot = builder.replace({ nodes, timeline }) as { order: readonly string[] }
     expect(snapshot.order).not.toContain('u30')
+  })
+
+  it('unhides a withdrawn span when its rewind is undone', () => {
+    const inner = new FakeBuilder()
+    const builder = new RewindVisibilityBuilder(inner)
+    builder.replace({ nodes: [...baseNodes(), command('cmd1', 40, 40, 5, 20)], timeline })
+    expect(inner.order).toEqual(['p2', 'u2', 'a2'])
+
+    // The ledger marks the rewind undone; target+marker name its cut exactly.
+    setUndoneCutKeys(new Set(['5:20']))
+    refreshRewindVisibility()
+
+    // Both the withdrawn prompt and its answer return, in their original place;
+    // the engine command itself stays hidden (it is plumbing, not dialogue).
+    expect(inner.order).toEqual(['p1', 'u1', 'a1', 'p2', 'u2', 'a2'])
+    expect(inner.nodes.get('u1')?.visibility).toBe('visible')
+    expect(inner.nodes.get('a1')?.visibility).toBe('visible')
+    expect(inner.nodes.get('p1')?.visibility).toBe('visible')
+  })
+
+  it('leaves a still-active cut hidden when a different rewind is undone', () => {
+    const inner = new FakeBuilder()
+    const builder = new RewindVisibilityBuilder(inner)
+    builder.replace({
+      nodes: [...baseNodes(), command('cmd1', 40, 40, 5, 20), command('cmd2', 50, 50, 30, 45)],
+      timeline,
+    })
+    expect(inner.order).toEqual([])
+
+    setUndoneCutKeys(new Set(['5:20']))
+    refreshRewindVisibility()
+
+    // Turn 2's dialogue is still cut away, so its process summary stays hidden
+    // too even though its own anchor sits just outside the cut.
+    expect(inner.order).toEqual(['p1', 'u1', 'a1'])
+    expect(inner.nodes.get('p2')?.visibility).toBe('hidden')
+    expect(inner.nodes.get('u2')?.visibility).toBe('hidden')
   })
 })
 

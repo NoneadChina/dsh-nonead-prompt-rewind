@@ -34,7 +34,8 @@ import {
   type RewindCandidate,
 } from './candidates.ts'
 import { closeConfirm, openConfirm, registerPreviewCall, registerComposerFocuser } from './confirm.ts'
-import { installChatViewVisibility } from './visibility.ts'
+import { installChatViewVisibility, refreshRewindVisibility } from './visibility.ts'
+import { setUndoneCutKeys, undoneCutKeysOf } from './undo-state.ts'
 import { createRewindBridge, isRewindInertSession, runRewindAndFill, writeComposer, type SlotsLike } from './portals.tsx'
 import { chatSnapshotOf, resolveChatWatch, type ChatOf, type ChatWatch, type MessageImageRef } from './hidden.ts'
 import { archiveOverRpc, candidatesOverRpc, capsOverRpc, clearHistoryOverRpc, historyOverRpc, previewOverRpc, undoOverRpc, type ConnectionLike } from './host-rpc.ts'
@@ -426,11 +427,26 @@ export function apply(ctx: ClientContext): void {
           locale: NS,
           inject: () => {
             const surface = settingsSurface
+            // Loading the ledger is also what teaches the chat layer which cuts
+            // were undone: those spans must reappear where they were cut, so the
+            // undo releases the cut instead of replaying messages into the log.
+            const loadHistory = async (sessionId: string) => {
+              const view = await historyOverRpc(connection, sessionId)
+              if (view !== undefined && setUndoneCutKeys(undoneCutKeysOf(view.entries))) {
+                refreshRewindVisibility()
+              }
+              return view
+            }
+            const undoHistory = async (sessionId: string, opId: string) => {
+              const outcome = await undoOverRpc(connection, sessionId, opId)
+              if (outcome !== undefined) await loadHistory(sessionId)
+              return outcome
+            }
             return {
               currentSessionId: mainViewSessionId,
-              loadHistory: (sessionId: string) => historyOverRpc(connection, sessionId),
+              loadHistory,
               clearHistory: (sessionId: string) => clearHistoryOverRpc(connection, sessionId),
-              undoHistory: (sessionId: string, opId: string) => undoOverRpc(connection, sessionId, opId),
+              undoHistory,
               loadArchive: (sessionId: string, opId: string) => archiveOverRpc(connection, sessionId, opId),
               loadCaps: (sessionId: string) => capsOverRpc(connection, sessionId),
               // The configuration knobs render on this page from the SAME model

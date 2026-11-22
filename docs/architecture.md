@@ -200,14 +200,18 @@ back to the bytes ref and report `undo-unavailable` when it is gone. An undo int
 (`recovery-required` / `rollback-running`) is retried from the recorded rescue state rather than
 restarted.
 
-Undo also restores the conversation's prompts: the journal carries the user/assistant text
-messages the rewind shadowed, and a successful file rollback republishes the user prompts as
-new events. The surface has no inverse of `replace`, so the original nodes stay shadowed and
-the log keeps both copies. Assistant text is saved but not injected into the live transcript:
-the chat view only renders an assistant message inside a turn/step the agent opened, and the
-agent's turn counter is private, so a fabricated turn collides with the next real turn and
-merges the two answers. A rewind that shadowed only dialogue writes a journal with no file
-actions, so a conversation-only rewind is undoable once as well.
+Undo also restores the conversation: the journal carries the user/assistant text messages the
+rewind shadowed as an audit record, but undo does **not** republish them. The surface has no
+inverse of `replace`, and a replayed message lands outside any turn while a fabricated turn
+collides with the agent's next real turn (`turn:step` key reuse) — that collision is what pushed
+later answers out of order. Instead each history entry records the marker seq (`markerSeq`), and
+undo marks the entry `undoneAt`; the Chat visibility wrapper treats `targetSeq:markerSeq` as the
+cut identity, drops cuts whose entry is undone, and repaints. The shadowed nodes are still in the
+loaded window, so the withdrawn prompt and its answer return in their original place with their
+original Turn location. The release is view state: a full window rebuild (session reopened) shows
+the span as shadowed again, and entries predating `markerSeq` cannot name their cut. A rewind that
+shadowed only dialogue writes a journal with no file actions, so a conversation-only rewind is
+undoable once as well.
 ## 6. History and the Settings page
 History is an audit trail, never a restore source:
 

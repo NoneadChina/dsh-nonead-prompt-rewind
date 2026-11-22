@@ -58,6 +58,12 @@ export interface HistoryEntry {
   readonly sessionTitle?: string
   readonly at: number
   readonly targetSeq: number
+  /**
+   * Log seq of the marker this rewind appended. Together with `targetSeq` it
+   * identifies the Chat span the rewind withdrew, so an undo can un-hide
+   * exactly that span. Absent on entries written before the field existed.
+   */
+  readonly markerSeq?: number
   /** Whether this rewind actually touched files (a journal exists ⇒ undoable). */
   readonly hadFiles: boolean
   readonly outcome: HistoryOutcome

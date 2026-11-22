@@ -22,6 +22,7 @@ import {
   type RewindCut,
 } from './hidden.ts'
 import { rewindLog } from './log.ts'
+import { isCutUndone } from './undo-state.ts'
 
 interface BuilderLike {
   readonly empty: unknown
@@ -86,6 +87,27 @@ interface PatchRecord {
 
 let patches = new Map<object, PatchRecord>()
 let currentCleanup: (() => void) | undefined
+
+/**
+ * Live builders, so an undo can release its cut and repaint without waiting for
+ * the next node upsert. Weak references keep a disposed view collectable.
+ */
+const liveBuilders = new Set<WeakRef<RewindVisibilityBuilder>>()
+
+/**
+ * Repaint every live chat builder after the set of undone cuts changed.
+ * Called when history is (re)loaded and after a successful undo.
+ */
+export function refreshRewindVisibility(): void {
+  for (const ref of [...liveBuilders]) {
+    const builder = ref.deref()
+    if (builder === undefined) {
+      liveBuilders.delete(ref)
+      continue
+    }
+    builder.refresh()
+  }
+}
 
 /**
  * Wrap the registered `chat` view builder so rewind spans enter the builder as
@@ -154,6 +176,7 @@ function installOn(ui: UiConversationLike | undefined, sessions: SessionsLike | 
     restorePatches()
     // Existing builders keep the wrapper until recreated.
     rebuildOpenSessions(ui, sessions)
+    liveBuilders.clear()
   }
 }
 
@@ -196,21 +219,37 @@ export class RewindVisibilityBuilder implements BuilderLike {
   private cuts: readonly RewindCut[] = []
   private cutSignature = '[]'
   private lastSignature = '[]'
+  private lastTimeline: unknown = undefined
 
   /** @param inner - the real Chat builder. */
-  constructor(private readonly inner: BuilderLike) {}
+  constructor(private readonly inner: BuilderLike) {
+    liveBuilders.add(new WeakRef(this))
+  }
 
   get empty(): unknown {
     return this.inner.empty
   }
 
+  /**
+   * Recompute the hiding from scratch. Used when the undone-cut set changed:
+   * the released span must reappear in place, which only a full replace of the
+   * node list can do (the builder has no "unhide" incremental op).
+   */
+  refresh(): void {
+    this.refreshCuts()
+    this.lastSignature = this.cutSignature
+    this.inner.replace({ nodes: this.deriveAll(), timeline: this.lastTimeline })
+  }
+
   replace(input: BuilderInput): unknown {
     this.setAll(input.nodes)
+    this.lastTimeline = input.timeline
     this.lastSignature = this.cutSignature
     return this.inner.replace({ nodes: this.deriveAll(), timeline: input.timeline, ...changed(input) })
   }
 
   apply(input: BuilderApplyInput): unknown {
+    this.lastTimeline = input.timeline
     const affected = new Set<number>()
     let commandsChanged = false
     for (const node of input.upserts) {
@@ -295,7 +334,10 @@ export class RewindVisibilityBuilder implements BuilderLike {
   }
 
   private refreshCuts(): void {
-    this.cuts = rewindCutsOf(this.commands.values())
+    // An undone rewind no longer hides anything: the span it cut away returns in
+    // place, which is what makes the withdrawn prompts AND answers reappear
+    // without appending fabricated events to the log.
+    this.cuts = rewindCutsOf(this.commands.values()).filter(cut => !isCutUndone(cut))
     this.cutSignature = JSON.stringify(
       this.cuts.map(cut => `${cut.target}:${cut.marker}`).sort(),
     )
