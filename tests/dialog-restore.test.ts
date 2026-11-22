@@ -1,14 +1,18 @@
 /**
  * A rewind withdraws a span of dialogue with a surface `replace`, which has no
  * inverse: the log stays append-only and the shadowed events stay shadowed.
- * These tests pin what an undo may and may not do about that:
+ * These tests pin what an undo does about that:
  *
  *   - `collectDialog` keeps the withdrawn text (human prompts + assistant text,
  *     no tool traffic) so the journal can audit it;
- *   - the cut really removes both sides from the surface, and an undo does NOT
- *     republish them — replaying would append NEW events with no Turn location
- *     and would push later output out of order. Releasing the cut in the Chat
- *     view is the undo path (covered by visibility tests);
+ *   - the cut really removes both sides from the surface;
+ *   - `replayDialog` republishes them as ONE new turn at the end of the log —
+ *     a real `turn/start`/`step/start`/`turn/end` skeleton, because a bare
+ *     `assistant/message` without a live step is never materialized and a
+ *     `user/message` outside any turn lands in the session location, which is
+ *     what used to scatter later answers;
+ *   - the replayed turn sits far past every logged turn, so the agent's own
+ *     in-memory counter (`lastTurn + 1`) can never reuse it;
  *   - a conversation-only restore still writes a journal, so the one undo can
  *     roll it back.
  */
@@ -18,7 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SnapshotStore } from '../src/snapshot.ts'
-import { collectDialog } from '../src/index.ts'
+import { collectDialog, replayDialog } from '../src/index.ts'
 import { appendTurn, rewindMarker } from './helpers.ts'
 import { planRewind } from '../src/rewind.ts'
 
@@ -39,8 +43,13 @@ function surfaceText(session: Session, seq: number): string {
   return ''
 }
 
-describe('dialog capture', () => {
-  it('keeps the withdrawn text in the journal and leaves the cut alone', () => {
+/** Concatenated text of everything currently on the surface. */
+function surfaceDump(session: Session): string {
+  return session.surface.nodes.map(seq => surfaceText(session, seq)).join('\n')
+}
+
+describe('dialog capture and replay', () => {
+  it('collects the withdrawn text and cuts both sides from the surface', () => {
     const session = Session.create(SessionId('dialog-session'))
     appendTurn(session, 1)
     appendTurn(session, 2)
@@ -61,16 +70,66 @@ describe('dialog capture', () => {
       surfaceOp: { op: 'replace', startSeq: plan.surfaceStart as SessionSeq, endSeq: plan.surfaceEnd as SessionSeq },
       sourceEventSeqs: [...plan.shadowedSeqs] as SessionSeq[],
     })
-    const after = session.surface.nodes.map(seq => surfaceText(session, seq)).join('\n')
+    const after = surfaceDump(session)
     expect(after).not.toContain('question 1')
     expect(after).not.toContain('answer 1')
     expect(after).not.toContain('question 2')
     expect(after).not.toContain('answer 2')
 
-    // The marker's seq is what the history entry stores as `markerSeq`; with the
-    // target seq it identifies the cut the client releases on undo.
+    // The marker's seq is what the history entry stores as `markerSeq`.
     expect(typeof marker.seq).toBe('number')
     expect(marker.seq).toBeGreaterThan(plan.targetSeq)
+  })
+
+  it('republishes the withdrawn dialogue as one new turn past every logged turn', () => {
+    const session = Session.create(SessionId('dialog-replay'))
+    appendTurn(session, 1)
+    appendTurn(session, 2)
+
+    const target = session.snapshotEvents().find(event => event.type === 'user/message')!.seq
+    const plan = planRewind(session.snapshotEvents(), session.surface.nodes, { kind: 'seq', seq: target })
+    const dialog = collectDialog(session, plan.shadowedSeqs)
+    session.append('user/message', rewindMarker(), {
+      surfaceOp: { op: 'replace', startSeq: plan.surfaceStart as SessionSeq, endSeq: plan.surfaceEnd as SessionSeq },
+      sourceEventSeqs: [...plan.shadowedSeqs] as SessionSeq[],
+    })
+
+    const replayed = replayDialog(session, dialog)
+    expect(replayed).toBe(4)
+
+    const dump = surfaceDump(session)
+    expect(dump).toContain('question 1')
+    expect(dump).toContain('answer 1')
+    expect(dump).toContain('question 2')
+    expect(dump).toContain('answer 2')
+
+    // The replay must not reuse any turn the agent could still allocate: the
+    // agent hands out `lastTurn + 1` from memory, so the replayed turn has to
+    // land far beyond the log's newest turn.
+    const turns = session
+      .snapshotEvents()
+      .filter(event => event.type === 'turn/start')
+      .map(event => (event.data as { turn: number }).turn)
+    const replayTurn = Math.max(...turns)
+    expect(replayTurn).toBeGreaterThan(2)
+    expect(turns.filter(turn => turn === replayTurn)).toHaveLength(1)
+
+    // Every replayed message must be inside a step that was actually started,
+    // or the Chat view never materializes the answer.
+    const events = session.snapshotEvents()
+    const steps = new Set(
+      events
+        .filter(event => event.type === 'step/start')
+        .map(event => `${(event.data as { turn: number }).turn}:${(event.data as { step: number }).step}`),
+    )
+    const replayedAnswers = events.filter(
+      event => event.type === 'assistant/message' && (event.data as { turn: number }).turn === replayTurn,
+    )
+    expect(replayedAnswers).toHaveLength(2)
+    for (const answer of replayedAnswers) {
+      const data = answer.data as { turn: number; step: number }
+      expect(steps.has(`${data.turn}:${data.step}`)).toBe(true)
+    }
   })
 
   it('keeps a journal for a conversation-only restore and undoes it', async () => {

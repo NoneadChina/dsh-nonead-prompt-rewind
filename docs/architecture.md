@@ -200,18 +200,21 @@ back to the bytes ref and report `undo-unavailable` when it is gone. An undo int
 (`recovery-required` / `rollback-running`) is retried from the recorded rescue state rather than
 restarted.
 
-Undo also restores the conversation: the journal carries the user/assistant text messages the
-rewind shadowed as an audit record, but undo does **not** republish them. The surface has no
-inverse of `replace`, and a replayed message lands outside any turn while a fabricated turn
-collides with the agent's next real turn (`turn:step` key reuse) — that collision is what pushed
-later answers out of order. Instead each history entry records the marker seq (`markerSeq`), and
-undo marks the entry `undoneAt`; the Chat visibility wrapper treats `targetSeq:markerSeq` as the
-cut identity, drops cuts whose entry is undone, and repaints. The shadowed nodes are still in the
-loaded window, so the withdrawn prompt and its answer return in their original place with their
-original Turn location. The release is view state: a full window rebuild (session reopened) shows
-the span as shadowed again, and entries predating `markerSeq` cannot name their cut. A rewind that
-shadowed only dialogue writes a journal with no file actions, so a conversation-only rewind is
-undoable once as well.
+Undo also restores the conversation, and it does so in the LOG, not in the view: the surface has
+no inverse of `replace`, and a bare replay is not enough either (a new `user/message` lands
+outside any turn; an `assistant/message` without a live step is never materialized — that is what
+pushed later answers out of order). So `replayDialog` writes the event shape the agent writes:
+one `turn/start` whose number is `newestLoggedTurn + 1_000_000`, one `step/start … step/end` per
+prompt/answer pair, then `turn/end`. The offset is load-bearing: the agent keeps its turn counter
+in memory (it reads `lastTurn` from the log once at construction, then hands out `lastTurn + 1`),
+so a replay at `maxTurn + 1` would be reused by the next real turn — and a reused turn number is
+worse than a key clash, because the client's location index files drafts by turn number and the
+revived messages would land at the old turn's position. Because the replay is a real turn at the
+end of the log, it survives a host restart and a full window rebuild. If a turn is still open when
+the undo arrives, the channel answers `rewind/undo-busy` and touches nothing, so a replay can
+never nest inside a live turn. Each history entry also records `markerSeq`, which lets the history
+UI name the shadowed span; it no longer releases anything. A rewind that shadowed only dialogue
+writes a journal with no file actions, so a conversation-only rewind is undoable once as well.
 ## 6. History and the Settings page
 History is an audit trail, never a restore source:
 

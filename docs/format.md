@@ -246,36 +246,43 @@ anchor it removed. `readPrunedThrough` falls back to that tombstone, so a previe
 cleared session reports file restore as unavailable instead of rendering an empty diff;
 the next snapshot recorded for that session deletes the tombstone again.
 
-### Dialogue capture (audit only)
+### Dialogue capture
 A journal may also carry `dialog`: the user and assistant text messages the rewind
 shadowed, captured from the shadowed seqs. Only human user messages and assistant
 `text` blocks are kept; tool calls/results, reasoning, usage and stream data are never
-stored. This is an **audit record** of what the cut withdrew — undo does not replay it.
+stored. It is what an undo republishes (below).
 
-### Undo releases the cut instead of replaying
+### Undo republishes the dialogue as a new turn
 The surface has no inverse of `replace`, so the shadowed originals stay shadowed
-forever. Re-appending them as new events cannot be made correct: a new `user/message`
-lands outside any turn (the agent owns the turn frame, and a plugin cannot re-open one),
-and a fabricated turn collides with the next real turn because both claim the same
-`turn:step` node key — which is exactly what moved the following answer out of order.
+forever. Appending bare messages cannot work either: a new `user/message` lands outside
+any turn and a new `assistant/message` without a live step is never materialized — which
+is exactly what used to scatter later answers. So the undo writes the same event shape
+the agent itself writes:
 
-The chat view, however, still holds the shadowed nodes in its loaded window (the
-assembler keeps published nodes until a full window rebuild) and merely hides them. So
-undo works on the view, not on the log:
+- `turn/start` with `turn = newestLoggedTurn + 1_000_000`;
+- one `step/start … step/end` per prompt/answer pair, the prompt as `user/message` and
+  the answer as `assistant/message` (`stream: []`), both `surfaceOp: 'append'`;
+- `turn/end` with `{ kind: 'completed' }`.
 
-- each rewind records the marker seq in its history entry (`markerSeq`); together with
-  `targetSeq` it names the cut (`target:marker`);
-- an entry with `undoneAt` set releases exactly that cut;
-- the visibility wrapper drops released cuts and repaints the node list, so the
-  withdrawn prompt **and** its answer reappear in their original place, with their
-  original Turn location, and the next prompt the user sends continues after them.
+The offset matters. The agent allocates turn numbers from an in-memory counter: it
+reads `lastTurn` out of the log once, when it is constructed, then hands out
+`lastTurn + 1` without rereading. A replay at `maxTurn + 1` would therefore be reused by
+the agent's next real turn, and reusing a turn number is worse than a key clash — the
+client's location index keys turn drafts by number, so the revived messages would be
+filed at the old turn's position instead of the end. A million turns of headroom keeps a
+replay out of the agent's way.
 
-Consequences worth stating: the release is a client-side view state, so it needs the
-loaded window (a session reopened after a full rebuild shows the cut span as shadowed
-again), and entries written before `markerSeq` existed cannot name their cut and stay
-hidden. A rewind that only shadowed dialogue (no file actions) still writes a journal
-with `actions: []` plus `dialog`, so a conversation-only rewind can be undone exactly
-once. A journal without `dialog` (legacy) remains file-only.
+Because the replay is a real turn at the end of the log, it survives a host restart and
+a full window rebuild, and the next prompt continues after it. `markerSeq` and
+`targetSeq` stay recorded so the history UI can name the shadowed span; they no longer
+release anything in the view.
+
+If a turn is still open (`turn/start` without `turn/end`), the undo refuses with
+`rewind/undo-busy` instead of nesting one turn inside another: no file work happens and
+the button can be pressed again once the turn closes. A rewind that only shadowed
+dialogue (no file actions) still writes a journal with `actions: []` plus `dialog`, so a
+conversation-only rewind can be undone exactly once. A journal without `dialog` (legacy)
+remains file-only.
 ## 9. Rewind history partition
 History is a separate root with a separate schema and lifetime:
 

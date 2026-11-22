@@ -28,7 +28,7 @@ import type { Context, Volatile } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
-import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId, SessionSeq, UserMessage } from '@deepseek-ai/dsh-session'
 import type { PostToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type { WorkingDirectoryService } from '@deepseek-ai/dsh-working-directory'
@@ -763,9 +763,8 @@ function formatBytes(bytes: number): string {
 
 /**
  * Collect the text messages a rewind is about to shadow. The journal keeps
- * them as an audit record of what the cut withdrew; an undo does NOT republish
- * them (see the undo endpoint), because a replay can only ever append NEW
- * nodes — losing their Turn location and reordering the live conversation.
+ * them so an undo can republish the dialogue as a new turn (`replayDialog`) —
+ * the surface `replace` that performs the cut has no inverse.
  */
 export function collectDialog(session: Session, seqs: readonly number[]): RestoreDialogItem[] {
   const items: RestoreDialogItem[] = []
@@ -788,6 +787,141 @@ export function collectDialog(session: Session, seqs: readonly number[]): Restor
     }
   }
   return items
+}
+
+/**
+ * Distance between the newest logged turn and a replayed turn.
+ *
+ * The agent allocates turn numbers from an IN-MEMORY counter: it reads
+ * `lastTurn` out of the log once, when it is constructed, and then hands out
+ * `lastTurn + 1` without rereading. A replay that reused `maxTurn + 1` would
+ * therefore collide with the agent's next real turn — and a reused turn number
+ * is worse than a key clash: the client's location index keys turn drafts by
+ * number, so the revived messages would be filed at the OLD turn's position
+ * instead of the end of the conversation. Landing a million turns ahead is
+ * what keeps a replay out of the agent's way for good.
+ */
+const REPLAY_TURN_OFFSET = 1_000_000
+
+/** Provider/model stamped on replayed assistant messages. */
+const REPLAY_ASSISTANT_SOURCE = { provider: 'prompt-rewind', model: 'restored' } as const
+
+/**
+ * The log's events, or an empty list when the session cannot be read.
+ *
+ * A live session always answers `snapshotEvents`. Callers of the undo channel
+ * may still hand a partially faked session (tests, and a host that rejects the
+ * read): treating that as "no turn" keeps the file half of an undo working
+ * instead of throwing away the whole operation.
+ */
+function loggedEvents(session: Session): readonly { readonly type: string; readonly data?: unknown }[] {
+  const read = (session as { snapshotEvents?: () => readonly { readonly type: string; readonly data?: unknown }[] })
+    .snapshotEvents
+  if (typeof read !== 'function') return []
+  try {
+    return read.call(session)
+  } catch {
+    return []
+  }
+}
+
+/** Newest turn number in the log, or 0 when the log has no turn yet. */
+function newestTurn(session: Session): number {
+  let newest = 0
+  for (const event of loggedEvents(session)) {
+    if (event.type !== 'turn/start' && event.type !== 'turn/end') continue
+    const turn = (event.data as { turn?: unknown } | undefined)?.turn
+    if (typeof turn === 'number' && turn > newest) newest = turn
+  }
+  return newest
+}
+
+/**
+ * True when the log's newest turn was started and never closed. Appending a
+ * replay then would nest one turn inside another, so the undo waits for the
+ * close instead (the caller skips the dialogue half and still restores files).
+ */
+function turnIsOpen(session: Session): boolean {
+  const events = loggedEvents(session)
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const type = events[index]!.type
+    if (type === 'turn/start') return true
+    if (type === 'turn/end') return false
+  }
+  return false
+}
+
+/**
+ * Republish a withdrawn dialogue as ONE new turn at the end of the log.
+ *
+ * This is the undo path. A surface `replace` has no inverse, and appending bare
+ * messages cannot work: a `user/message` outside any turn lands in the session
+ * location and a `assistant/message` without a live step is never materialized,
+ * which is exactly what used to scatter later answers. So the replay builds the
+ * full shape the agent itself writes — `turn/start`, one `step/start …
+ * step/end` per prompt/answer pair, `turn/end` — under a turn number far past
+ * every logged turn (see {@link REPLAY_TURN_OFFSET}).
+ *
+ * Only text is restored: tool calls and results belong to the discarded future.
+ * The surface keeps the original (shadowed) nodes, so the revived turn renders
+ * as the newest exchange and nothing is duplicated.
+ *
+ * @returns how many messages were republished.
+ */
+export function replayDialog(session: Session, dialog: readonly RestoreDialogItem[]): number {
+  if (dialog.length === 0) return 0
+  if (turnIsOpen(session)) {
+    throw new Error('cannot replay a dialogue while a turn is still open')
+  }
+  const turn = newestTurn(session) + REPLAY_TURN_OFFSET
+  let step = 0
+  let open = false
+  let replayed = 0
+  const closeStep = (): void => {
+    if (!open) return
+    session.append('step/end', { turn, step })
+    open = false
+  }
+  session.append('turn/start', { turn })
+  try {
+    for (const item of dialog) {
+      // A prompt opens its own step; an answer rides on the open one. An answer
+      // that arrives without a prompt (the cut started mid-turn) still needs a
+      // step of its own or the surface would drop it.
+      if (item.role === 'user' || !open) {
+        closeStep()
+        step += 1
+        session.append('step/start', { turn, step })
+        open = true
+      }
+      if (item.role === 'user') {
+        session.append(
+          'user/message',
+          createUserMessage({ content: item.content as ContentBlock[], source: { kind: 'user' } }),
+          { surfaceOp: 'append' },
+        )
+      } else {
+        session.append(
+          'assistant/message',
+          {
+            turn,
+            step,
+            message: createAssistantMessage({
+              content: item.content as ContentBlock[],
+              source: REPLAY_ASSISTANT_SOURCE,
+            }),
+            stream: [],
+          },
+          { surfaceOp: 'append' },
+        )
+      }
+      replayed += 1
+    }
+    closeStep()
+  } finally {
+    session.append('turn/end', { turn, reason: { kind: 'completed' } })
+  }
+  return replayed
 }
 
 /** Resolve a raw target token into a plan, mapping failures to messages. */
@@ -1028,19 +1162,31 @@ export function createRewindRpcHandler(
           return rpcFailure('rewind/undo-not-top', 'restore the newer rewind first')
         }
         try {
-          // Undo restores the FILE half and then un-hides the Chat span this
-          // rewind withdrew. It deliberately does NOT append a replayed
-          // dialogue: replaying only the user prompts left nodes with no Turn
-          // (session location) that rendered apart from the rest of the
-          // conversation — which is what pushed later output out of order —
-          // and replaying the assistant text would need a synthetic turn that
-          // collides with the agent's private turn counter.
+          // Undo restores the FILE half, then brings the withdrawn dialogue
+          // back as one new turn at the end of the log (`replayDialog`).
           //
-          // The withdrawn nodes are still materialized in the loaded window
-          // (DSH keeps a Context's published nodes until the window is
-          // rebuilt), so clearing the cut in the client restores BOTH the
-          // prompt and the answer in place. `markerSeq` on the history entry
-          // is what lets the client match that exact cut.
+          // A cut is a `surfaceOp: 'replace'`, which has no inverse: the
+          // withdrawn nodes stay out of the derived surface forever, so neither
+          // "un-hide the cut in the client" (nodes are gone once the chat window
+          // is rebuilt, e.g. after a host restart) nor "append bare messages"
+          // (a prompt outside any turn renders apart from the conversation and
+          // an answer without a live step is never materialized) can restore
+          // them. Only writing the same event shape the agent writes does.
+          // A journal may be unavailable (pruned, or a host that cannot read it):
+          // that only costs the dialogue half, never the file restore.
+          let journal: Awaited<ReturnType<SnapshotStore['readRestoreJournal']>> | undefined
+          try {
+            journal = await store.readRestoreJournal(entry.sessionId, opId)
+          } catch {
+            journal = undefined
+          }
+          const dialog = journal?.dialog ?? []
+          // A replay appends a whole turn; nesting one inside a live turn would
+          // corrupt the log, so refuse until the turn closes — files are left
+          // untouched and the page can offer the button again.
+          if (dialog.length > 0 && turnIsOpen(session)) {
+            return rpcFailure('rewind/undo-busy', 'wait for the current turn to finish before restoring the dialogue')
+          }
           const outcome = await store.undoRestore(entry.sessionId, opId, path => unlink(path))
           // The undo rewrites the worktree exactly like a rewind, so it must run
           // the same settle step: without it the session's NEXT write of a
@@ -1049,6 +1195,18 @@ export function createRewindRpcHandler(
           // exactly how a file stops being checkpointed after an undo. Failure
           // here never fails the undo itself: the disk is already correct.
           if (settle !== undefined) await settle({ session }, outcome).catch(() => undefined)
+          // Only a FULLY applied file half republishes the dialogue: a partial
+          // pass is still retryable, and replaying into it would duplicate the
+          // turn on the retry.
+          let replayed = 0
+          let replayError: unknown
+          if (outcome.failed.length === 0 && dialog.length > 0) {
+            try {
+              replayed = replayDialog(session, dialog)
+            } catch (error) {
+              replayError = error
+            }
+          }
           // Only a FULLY applied undo is stamped. A partial pass leaves the
           // journal in `recovery-required`; writing `undoneAt` here would lock
           // the entry out (`already-undone`) with the files half rolled back and
@@ -1056,18 +1214,26 @@ export function createRewindRpcHandler(
           if (outcome.failed.length === 0) {
             await host.store.patch(workspace.key, opId, {
               undoneAt: Date.now(),
-              undoOutcome: 'success',
-              undoMode: 'files',
+              undoOutcome: replayError === undefined ? 'success' : 'partial',
+              undoMode: replayed > 0 ? 'files+refill' : 'files',
             })
           }
+          // The conversation half is reported as a failed path so the page
+          // says "files restored, dialogue not" instead of claiming success.
+          const failed = replayError === undefined
+            ? outcome.failed
+            : [...outcome.failed, {
+                path: '<conversation>',
+                message: replayError instanceof Error ? replayError.message : String(replayError),
+              }]
           return {
             ok: true,
             value: {
-              kind: outcome.failed.length > 0 ? 'partial' : 'ok',
+              kind: failed.length > 0 ? 'partial' : 'ok',
               restored: outcome.restored.length,
               deleted: outcome.deleted.length,
-              replayed: 0,
-              failed: outcome.failed,
+              replayed,
+              failed,
             },
           }
         } catch (error) {
