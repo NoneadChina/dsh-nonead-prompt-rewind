@@ -12,6 +12,7 @@ and the release steps are documented in
 
 - **撤销重放不再让会话无法重新加载**：0.6.0 把回放的 turn 号写成「最新日志 turn + 1,000,000」以避开 agent 的内存计数器，但 DSH 的会话校验要求 turn 号从 1 起严格连续、且只在**重新加载**时才校验——于是每次「回退 + 撤销」都会把日志写成一份下次打开就报 `SessionFormatError: turn/start does not open the expected turn` 的文件。现在改为写入日志的**下一个** turn 号，并在提交 `turn/start` **之前**同时校验、推进活动 agent 的回合计数器（`phase.lastTurn`）；agent 未暴露可用计数器时**先失败、不落盘任何回放事件**，由页面提示重载后重试（文件半仍然成功）。
 - **已损坏的会话可以修回**：`scripts/session-decode.mjs` 解码 → 按出现顺序重排 `turn`/`step` → `scripts/session-encode.mjs` 重新编码，即可让受影响的日志重新满足校验；原文件保持备份。
+- **回退标记的 `sourceEventSeqs` 一律写扁平数字**：加载校验要求它逐个覆盖被 replace 遮蔽的每一个 surface 节点；旧版把分组（`[start, end]`）原样写进日志，重载时同样报 `replacement sourceEventSeqs omit a shadowed surface node`。现在写入前用 `flattenShadowedSeqs` 展开、为空即拒绝；新增集成用例钉住「扁平、无重复、全部早于标记、覆盖整个区间」的形状。附带修法：已有日志里的分组引用可按闭区间展开并补齐缺失节点后重新编码。
 
 ## [0.6.0] - 2026-11-21
 

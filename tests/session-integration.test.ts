@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { AssistantMessage, UserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type SessionEvent, type SessionSeq } from '@deepseek-ai/dsh-session'
+import { flattenShadowedSeqs } from '../src/archive.ts'
 import { planRewind, REWIND_MARKER_SOURCE } from '../src/rewind.ts'
 
 function textMessage(text: string): UserMessage {
@@ -207,5 +208,29 @@ describe('in-place rewind over a real session', () => {
     expect((messages[1]!.content[0] as { text: string }).text).toBe('follow-up question')
     // marker at seq 4, follow-up at seq 5.
     expect([...session.surface.nodes]).toEqual([markerSeq, 5])
+  })
+
+  it('writes a flat sourceEventSeqs list that covers every shadowed surface node', () => {
+    // The load validator requires `sourceEventSeqs` to be a flat list of
+    // earlier, distinct seqs covering EVERY node the replace shadows. A nested
+    // entry (a grouped plan) makes the log unloadable with "… replacement
+    // sourceEventSeqs omit a shadowed surface node", so the write path flattens
+    // first — this pins the exact marker shape `executeRewind` produces.
+    const session = buildSession()
+    const plan = planRewind(session.snapshotEvents(), session.surface.nodes, { kind: 'index', index: 1 })
+    const sources = flattenShadowedSeqs(plan.shadowedSeqs)
+    const event = session.append('user/message', rewindMarker(), {
+      surfaceOp: { op: 'replace', startSeq: plan.surfaceStart as SessionSeq, endSeq: plan.surfaceEnd as SessionSeq },
+      sourceEventSeqs: sources as SessionSeq[],
+    })
+
+    const marker = session.snapshotEvents().find(candidate => candidate.seq === event.seq)!
+    const seqs = marker.sourceEventSeqs
+    expect(Array.isArray(seqs)).toBe(true)
+    expect(seqs!.every(seq => typeof seq === 'number')).toBe(true)
+    expect(new Set(seqs)).toEqual(new Set(plan.shadowedSeqs))
+    expect(seqs!.every(seq => seq < marker.seq)).toBe(true)
+    // And the surface really collapses to the marker alone over that range.
+    expect([...session.surface.nodes]).toEqual([0, 1, marker.seq])
   })
 })

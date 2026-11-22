@@ -285,6 +285,17 @@ a full window rebuild, and the next prompt continues after it. `markerSeq` and
 `targetSeq` stay recorded so the history UI can name the shadowed span; they no longer
 release anything in the view.
 
+**The cut marker's `sourceEventSeqs` must be flat and complete.** The rewind marker
+is a `user/message` whose `surfaceOp: { op: 'replace', startSeq, endSeq }` shadows a
+contiguous surface range; the load validator re-derives that range and requires
+`sourceEventSeqs` to name **every** shadowed surface node, as a flat list of earlier,
+distinct integers. Writing a grouped entry (for example `[start, end]`) stores an
+array where an integer is expected, and the log then fails to load with
+`SessionFormatError: replacement sourceEventSeqs omit a shadowed surface node`. The
+write path therefore flattens the plan's seqs first (`flattenShadowedSeqs`) and
+refuses an empty list; a legacy log can be repaired by expanding each grouped entry
+as a closed interval, adding any still-missing shadowed nodes, and re-encoding.
+
 If a turn is still open (`turn/start` without `turn/end`), the undo refuses with
 `rewind/undo-busy` instead of nesting one turn inside another: no file work happens and
 the button can be pressed again once the turn closes. A rewind that only shadowed

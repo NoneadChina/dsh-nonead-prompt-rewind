@@ -49,6 +49,7 @@ import {
   type WorkspaceLike,
 } from './history.ts'
 import { readRewindArchive, writeRewindArchive } from './archive-store.ts'
+import { flattenShadowedSeqs } from './archive.ts'
 import type { ArchiveEvent } from './archive.ts'
 import z from '@deepseek-ai/schemastery'
 import { preferredLocale, translate, type HostKey, type HostLocaleId } from './locales.ts'
@@ -1728,14 +1729,20 @@ async function executeRewind(
 
     // Preserve the dialogue this rewind is about to shadow. The undo record
     // needs it; a conversation-only rewind (no file changes) still gets one.
-    const dialog = collectDialog(agent.session, plan.shadowedSeqs)
+    // Flatten first: the load validator wants `sourceEventSeqs` to be a flat
+    // list of earlier, distinct seqs that covers EVERY shadowed surface node.
+    // A grouped (nested) entry would be stored verbatim and later rejected with
+    // "… replacement sourceEventSeqs omit a shadowed surface node".
+    const sourceSeqs = flattenShadowedSeqs(plan.shadowedSeqs)
+    const dialog = collectDialog(agent.session, sourceSeqs)
 
     const marker = buildMarker()
     let event: ReturnType<Session['append']>
     try {
+      if (sourceSeqs.length === 0) throw new Error('rewind shadows no surface seqs')
       event = agent.session.append('user/message', marker, {
         surfaceOp: { op: 'replace', startSeq: plan.surfaceStart as SessionSeq, endSeq: plan.surfaceEnd as SessionSeq },
-        sourceEventSeqs: [...plan.shadowedSeqs] as SessionSeq[],
+        sourceEventSeqs: sourceSeqs as SessionSeq[],
       })
     } catch (error) {
       const text = t('failed', { error: error instanceof Error ? error.message : String(error) })
