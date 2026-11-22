@@ -1,6 +1,6 @@
 # dsh-nonead-prompt-rewind 开发指南
 
-> 面向接手开发者的当前状态手册，描述版本 **0.6.0** 的仓库实况。
+> 面向接手开发者的当前状态手册，描述版本 **0.6.1** 的仓库实况。
 > 用户视角的行为说明在 [README](../README.md)；模块分层与流水线见 [architecture](architecture.md)；
 > 磁盘格式见 [format](format.md)；DSH 接口见 [harness-reference](harness-reference.md)；
 > 兼容性结论见 [compat/audit](compat/audit.md)。**变更历史只属于 [CHANGELOG](../CHANGELOG.md)**，
@@ -58,7 +58,7 @@
 
 | 项 | 当前值 | 事实来源 |
 | --- | --- | --- |
-| 包名 / 版本 | `dsh-nonead-prompt-rewind` `0.6.0` | [package.json](../package.json) |
+| 包名 / 版本 | `dsh-nonead-prompt-rewind` `0.6.1` | [package.json](../package.json) |
 | 许可 | MIT | [LICENSE](../LICENSE) |
 | Node | `>=24.9.0` | `engines.node` |
 | DSH | `>=0.2.1-0 <0.3.1-0` | `engines.dsh`（自 DSH 0.2.1-alpha.4 起是唯一准入判据） |
@@ -850,7 +850,7 @@ npm run typecheck
 client 半每次加载输出一行：
 
 ```
-[dsh-rewind:boot] loaded v0.6.0 (build <8 位源码哈希>)
+[dsh-rewind:boot] loaded v0.6.1 (build <8 位源码哈希>)
 ```
 
 用于回答"我跑的是不是修好的那个包"——最常见的根因（缓存/没重启/装的是旧 tarball）一眼排除。哈希由 `build.mjs` 对 `src/client/**` 全部内容计算，因此改任一 client 文件都会变。

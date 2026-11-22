@@ -10,7 +10,7 @@
 | Item | Value / where it lives |
 | --- | --- |
 | Package name | `dsh-nonead-prompt-rewind` |
-| Version | currently `0.5.5` in `package.json`; bump it there, never edit this page |
+| Version | currently `0.6.1` in `package.json`; bump it there, never edit this page |
 | Repository | `https://github.com/NoneadChina/dsh-nonead-prompt-rewind` |
 | License | MIT |
 | Node engine | `>=24.9.0` |

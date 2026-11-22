@@ -1,6 +1,6 @@
 # 开发计划：当前状态与后续路线图
 
-> 本文件描述 **0.6.0** 的基线与下一步工作，不记录已完成的过程叙事。
+> 本文件描述 **0.6.1** 的基线与下一步工作，不记录已完成的过程叙事。
 > 机制细节见 [开发指南](DEVELOPMENT-GUIDE.zh.md)；变更历史见 [CHANGELOG](../CHANGELOG.md)；
 > 兼容性结论见 [compat/audit](compat/audit.md)。
 
@@ -8,7 +8,7 @@
 
 | 项 | 现状 | 事实来源 |
 | --- | --- | --- |
-| 版本 | `0.6.0` | [package.json](../package.json) |
+| 版本 | `0.6.1` | [package.json](../package.json) |
 | 定位 | 同窗口就地回退对话 + 写前快照还原工作区文件 | [README](../README.md) |
 | 包形态 | 双面插件（host `lib/index.js` + client `lib/client.js`），一个 bundle row | `cordis.patch.yml`、`package.json` |
 | 运行环境 | Node `>=24.9.0`，DSH `>=0.2.1-0 <0.3.1-0` | `engines` |
@@ -23,7 +23,7 @@
 
 ### 已知缺口
 
-1. **没有 CI，发布全靠手动**：仓库没有 `.github/workflows/`；[release/release.md](release/release.md) 已如实写明"手动发布、Trusted Publisher 未配置"，因此每次发布都依赖本地 `npm run check` 与人工步骤。`node scripts/changelog-extract.mjs v0.6.0` 当前已通过（0.5.1 时代那次 `Full Changelog` 行校验失败已修好并写进模板）。
+1. **没有 CI，发布全靠手动**：仓库没有 `.github/workflows/`；[release/release.md](release/release.md) 已如实写明"手动发布、Trusted Publisher 未配置"，因此每次发布都依赖本地 `npm run check` 与人工步骤。`node scripts/changelog-extract.mjs v0.6.1` 当前已通过（0.5.1 时代那次 `Full Changelog` 行校验失败已修好并写进模板）。
 2. **0.2.1 线未逐版本验证**：`engines.dsh` 下限是 `0.2.1-0`，但 devDependencies 与端到端验证只覆盖 `0.2.2-rc.5`。低版本线依赖 `caps` 运行时探测降级，缺少"每个 0.2.1 patch 上实际能跑到哪一步"的记录。
 3. **验证口径**：`compat/audit.md` 的 `Version scope` 已写明"验证基线 = `0.2.2-rc.5`、0.2.1 线靠运行时能力探测降级"（2026-11-04 补记）；仍需在每次基线前进时同步该段与本文 §1 的数字。
 4. **界面语言只有 8 种且译文为 AI 生成**；新增语言目前需要同时改两份字典 + 一个 `locale/*.json`，没有生成器或校验清单。
@@ -46,7 +46,7 @@
 - 存在发布工作流：触发于 `v*` tag → 校验 tag 与 `package.json` 版本一致 → 跑全检 → 先跑 `node scripts/changelog-extract.mjs <tag>`（失败即中止）→ `npm publish --provenance` → 用抽取结果创建 GitHub Release；已发布版本跳过（幂等）。
 - `release/release.md` 与 `.github/workflows/` 实况一致（不再需要"未来工作流"清单），Trusted Publisher 段落在配置完成后可用。
 - 一次 `workflow_dispatch` 干跑（不发布）能跑通。
-- 发布前置：`node scripts/changelog-extract.mjs v0.6.0` 先通过（当前已通过）；注意 `v0.6.0` 目前**尚未打 tag**，最近 tag 是 `v0.5.5`。
+- 发布前置：`node scripts/changelog-extract.mjs v0.6.1` 先通过（当前已通过）；注意 `v0.6.1` 目前**尚未打 tag**，最近 tag 是 `v0.5.5`（`v0.6.0` 既未发布到 npm、也从未打 tag，本版自 0.5.5 直接跳到 0.6.1）。
 
 **第一步**：在仓库根建 `.github/workflows/ci.yml`，内容为 `actions/checkout@v4` + `actions/setup-node@v4`（`node-version: 24`）+ `npm ci` + `npm run check`；先只做 CI，不碰发布，跑通一次 PR 再继续。
 

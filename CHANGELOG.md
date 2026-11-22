@@ -8,28 +8,27 @@ and the release steps are documented in
 
 ## [Unreleased]
 
-### 问题修复
-
-- **撤销重放不再让会话无法重新加载**：0.6.0 把回放的 turn 号写成「最新日志 turn + 1,000,000」以避开 agent 的内存计数器，但 DSH 的会话校验要求 turn 号从 1 起严格连续、且只在**重新加载**时才校验——于是每次「回退 + 撤销」都会把日志写成一份下次打开就报 `SessionFormatError: turn/start does not open the expected turn` 的文件。现在改为写入日志的**下一个** turn 号，并在提交 `turn/start` **之前**同时校验、推进活动 agent 的回合计数器（`phase.lastTurn`）；agent 未暴露可用计数器时**先失败、不落盘任何回放事件**，由页面提示重载后重试（文件半仍然成功）。
-- **已损坏的会话可以修回**：`scripts/session-decode.mjs` 解码 → 按出现顺序重排 `turn`/`step` → `scripts/session-encode.mjs` 重新编码，即可让受影响的日志重新满足校验；原文件保持备份。
-- **回退标记的 `sourceEventSeqs` 一律写扁平数字**：加载校验要求它逐个覆盖被 replace 遮蔽的每一个 surface 节点；旧版把分组（`[start, end]`）原样写进日志，重载时同样报 `replacement sourceEventSeqs omit a shadowed surface node`。现在写入前用 `flattenShadowedSeqs` 展开、为空即拒绝；新增集成用例钉住「扁平、无重复、全部早于标记、覆盖整个区间」的形状。附带修法：已有日志里的分组引用可按闭区间展开并补齐缺失节点后重新编码。
-- **压缩进行中不再写入回放回合**：加载校验禁止 `turn/start`/`turn/end` 跨越未关闭的 `compaction/start`（`turn/start crosses an open compaction`），而运行时 `append` 不检查这条关系——若在 `/compact` 途中撤销，日志只会在下次重载时才失败。撤销现在先读日志，压缩未结束就拒绝对话回填（文件半照常恢复）；`session/end-seed` 之后视为已放弃的压缩不再阻塞。
-- **回放中途失败也会补齐 step/end**：回放的 `finally` 在写 `turn/end` 前先关闭仍打开的 step，避免消息 append 抛错时留下「有 turn/end、无 step/end」的日志（加载报 `turn/end does not match the open turn with no open step`）。新增 `tests/log-integrity.test.ts` 用宿主等价校验器覆盖「一次回退+撤销+再回退」「三轮回退/撤销」与 turn 跳号的对照用例。
-
-## [0.6.0] - 2026-11-21
+## [0.6.1] - 2026-11-22
 
 > 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
 
+本版汇总了自 `v0.5.5` 以来的主要变更。
+
 ### 新增功能
 
-- **撤销会把回退掉的对话也送回来**：每次回退记录被遮蔽的用户与助手消息，撤销时在日志尾部追加一个**新回合**（`turn/start` … `turn/end`，turn 号取「最新日志 turn + 1,000,000」，避免与 agent 内存计数器分配的下一个真实回合撞号而把恢复内容排回旧位置）；文件没有改动的纯对话回退同样可撤销，当前回合尚未结束时撤销返回 `rewind/undo-busy`。
-- **快照采集默认只收源码与文本**：跳过 `.dsh-tmp`、构建/渲染目录、浏览器 profile，以及媒体、压缩包、模型、可执行文件等后缀；首见扫描的单文件阈值 1 MiB，工具写入前仍为 8 MiB，可用 `snapshotBinaries` 放开二进制。
+- **撤销会把回退掉的对话也送回来**：每次回退记录被遮蔽的用户与助手消息，撤销时在日志尾部追加一个**新回合**（`turn/start` … `turn/end`，turn 号取日志的下一个），把这些消息按原顺序重新发布；文件没有改动的纯对话回退同样可撤销，当前回合尚未结束时撤销返回 `rewind/undo-busy`。
+- **快照采集默认只收源码与文本**：跳过 `.dsh-tmp`、`.dsh-project-memory` 等宿主簿记目录，构建/渲染目录与浏览器 profile，以及媒体、压缩包、模型、可执行文件等后缀；首见扫描的单文件阈值 1 MiB，工具写入前仍为 8 MiB，可用 `snapshotBinaries` 放开二进制。
 - **快照有了字节预算**：每会话 256 MiB、全库 2 GiB，超出后按最旧优先逐出到 80%；仍在保留窗口内的会话与撤销记录不会被逐出。
 - **新增回退地平线**：每会话保留最近 7 天或最新 30 组，更早目标只回退对话并在预览里标明文件不可用；有效窗口自动取「地平线天数」与「不活跃时间」的较大值。
 - **快照存储升级到 v3**：`objects/<sha256>` 全局对象池让跨会话相同字节共享一份，可压缩文本用 brotli 打包；新增 `/snapshot-auto-cleanup migrate` 与 `gc`（默认预演）。
 
 ### 问题修复
 
+- **回退与撤销不再写坏会话日志**：回放的 turn 号此前取「最新日志 turn + 1,000,000」以避开 agent 的内存计数器，但 DSH 的加载校验要求 turn 号从 1 起严格连续、且只在**重新加载**时校验——每次「回退 + 撤销」都会留下下次打开就报 `SessionFormatError: turn/start does not open the expected turn` 的日志。现在写入日志的**下一个** turn 号，并在提交 `turn/start` **之前**校验、推进活动 agent 的回合计数器（`phase.lastTurn`）；agent 未暴露可用计数器时**先失败、不落盘任何回放事件**，由页面提示重载后重试（文件半仍然成功）。
+- **回退标记的 `sourceEventSeqs` 一律写扁平数字**：加载校验要求它逐个覆盖被 replace 遮蔽的每一个 surface 节点，旧版把分组（`[start, end]`）原样写进日志，重载时报 `replacement sourceEventSeqs omit a shadowed surface node`；现在写入前展开扁平序列、为空即拒绝。
+- **压缩进行中不再写入回放回合**：加载校验禁止 `turn/start`/`turn/end` 跨越未关闭的 `compaction/start`，而运行时 append 不检查这条关系；撤销现在先读日志，压缩未结束就拒绝对话回填（文件半照常恢复），`session/end-seed` 之后视为已放弃的压缩不再阻塞。
+- **回放中途失败也会补齐 step/end**：`finally` 在写 `turn/end` 前先关闭仍打开的 step，不再留下「有 turn/end、无 step/end」的日志（加载报 `turn/end does not match the open turn with no open step`）。
+- **回退不再动宿主的记忆与工程簿记**：采集与还原排除 `.dsh`、`.dsh-tmp`、`.dsh-project-memory` 等宿主托管目录，回退只处理用户文件，不会因为簿记文件被改写而误报「回退后已改动」。
 - **撤销记录不再被后台清理误删**：每个会话保留最新一份已完成回退日志，直到被使用或被新的回退取代；此前下一次写入触发清理后，一秒前的回退就无法撤销。
 - **预算逐出不再让撤销误报「回退后已改动」**：撤销按回退前内容的 SHA-256 指纹判定，指纹齐全的回退不再依赖被逐出的旧快照；部分失败的撤销可以直接重试。
 - **清空会话后不再把「快照已过期」显示成「无文件」**：删除会话快照时留下墓碑，预览与撤销据此给出明确原因。
@@ -41,22 +40,30 @@ and the release steps are documented in
 ### 其他变更
 
 - **自动清理不再只跑一次**：由每个挂载只检查一次改为每小时复审，并在超出预算时立即触发；活动会话保护从一个会话扩展到所有在驱动会话。
-- **依赖声明补全，版本地板可验证**：`peerDependencies` 补上插件实际 import 的 5 个包（`dsh-agent`、`dsh-api-session-controller`、`dsh-client-ui-conversation`、`dsh-client-ui-input-trigger`、`dsh-client-ui-session`）；新增 `npm run verify:compat`，把依赖分别钉到 `0.2.1-rc.5` 与 `0.2.2-rc.5` 各跑三套类型检查与全量测试（两条线均通过），附件读取对两版签名自适应。`0.2.0` 线缺 `dsh-error` / `dsh-working-directory` 且 token-meter 尚无 marker-aware fold，`0.3.x` 尚未发布，两者都不在声明范围内。
+- **依赖声明补全，版本地板可验证**：`peerDependencies` 补上插件实际 import 的 5 个包（`dsh-agent`、`dsh-api-session-controller`、`dsh-client-ui-conversation`、`dsh-client-ui-input-trigger`、`dsh-client-ui-session`）；新增 `npm run verify:compat`，把依赖分别钉到 `0.2.1-rc.5` 与 `0.2.2-rc.5` 各跑三套类型检查与全量测试（两条线均通过），附件读取对两版签名自适应。`0.2.0` 线缺 `dsh-error` / `dsh-working-directory`，`0.3.x` 尚未发布，两者都不在声明范围内。
+- **已损坏的会话可以修回**：`scripts/session-decode.mjs` 解码 → 按出现顺序重排 `turn`/`step` → `scripts/session-encode.mjs` 重新编码，即可让受影响的日志重新满足校验；原文件保持备份。
 
 ---
 
 > DSH `>=0.2.1-0 <0.3.1-0` supported. Internal alpha.
 
+This release summarizes the main changes since `v0.5.5`.
+
 ### New Features
 
-- **Undo now brings the rewound conversation back too**: each rewind records the shadowed user and assistant messages, and undo appends a **new turn** (`turn/start` … `turn/end`, numbered `newest logged turn + 1,000,000` so it cannot collide with the next real turn the agent's in-memory counter allocates) that republishes them in order; a conversation-only rewind with no file work is undoable as well, and an undo during an open turn returns `rewind/undo-busy`.
-- **Capture defaults to source and text**: `.dsh-tmp`, build/render directories, browser profiles, and media, archive, model and executable extensions are skipped; the first-seen scan caps a file at 1 MiB while tool writes keep the 8 MiB cap, and `snapshotBinaries` opts back into binary files.
+- **Undo brings the rewound conversation back**: each rewind records the shadowed user and assistant messages, and undo appends a **new turn** (`turn/start` … `turn/end`, numbered with the log's next turn) that republishes them in order; a conversation-only rewind with no file work is undoable as well, and an undo during an open turn returns `rewind/undo-busy`.
+- **Capture defaults to source and text**: host bookkeeping directories such as `.dsh-tmp` and `.dsh-project-memory`, build/render directories, browser profiles, and media, archive, model and executable extensions are skipped; the first-seen scan caps a file at 1 MiB while tool writes keep the 8 MiB cap, and `snapshotBinaries` opts back into binary files.
 - **Snapshots have byte budgets**: 256 MiB per session and 2 GiB per store, evicting oldest-first down to 80%; sessions still inside the retention window and undo records are never evicted.
 - **A retention horizon was added**: each session keeps the last 7 days or the newest 30 anchor groups; older targets rewind the conversation only and the preview marks their files unavailable. The effective window is the larger of the horizon and the inactivity limit.
 - **Snapshot storage moved to v3**: a store-wide `objects/<sha256>` pool shares identical bytes across sessions and compressible text is brotli-packed; `/snapshot-auto-cleanup migrate` and `gc` were added (dry-run by default).
 
 ### Bug Fixes
 
+- **A rewind or undo no longer writes a log the harness cannot load**: the replay used to number its turn `newest logged turn + 1,000,000` so it could not collide with the agent's in-memory counter, but DSH validation requires turns to run consecutively from 1 and only checks this on **reload** — so every rewind plus undo left a log that failed on the next open with `SessionFormatError: turn/start does not open the expected turn`. The replay now writes the log's **next** turn, validating and advancing the driving agent's turn counter (`phase.lastTurn`) **before** it commits `turn/start`; when the agent exposes no usable counter it **fails first and persists no replay event**, and the page asks for a reload (the file half still succeeds).
+- **The cut marker's `sourceEventSeqs` are always flat numbers**: validation requires the list to cover every surface node the replacement shadowed; the previous version wrote groups (`[start, end]`) verbatim and a reload failed with `replacement sourceEventSeqs omit a shadowed surface node`. The list is now flattened before writing, and an empty one is refused.
+- **No replay turn is written while a compaction is open**: validation forbids `turn/start`/`turn/end` crossing an unclosed `compaction/start`, while runtime `append` does not check it. Undo now reads the log first and refuses the dialogue half while a compaction is open (the file half still restores); a compaction abandoned by `session/end-seed` no longer blocks.
+- **A replay that fails midway still closes its step**: `finally` closes any open step before writing `turn/end`, so a log never ends with `turn/end` and no `step/end` (which loads as `turn/end does not match the open turn with no open step`).
+- **A rewind no longer touches the harness's own bookkeeping**: capture and restore skip host-managed directories (`.dsh`, `.dsh-tmp`, `.dsh-project-memory`), so a rewind only handles user files and no longer reports "changed after the rewind" because a bookkeeping file was rewritten.
 - **The undo record is no longer reclaimed by background pruning**: each session keeps its newest completed restore journal until it is used or superseded; previously the next write's cleanup made a rewind that was seconds old impossible to undo.
 - **Budget eviction no longer makes undo report "changed after the rewind"**: undo compares a SHA-256 fingerprint of the restored bytes, so fingerprinted rewinds no longer depend on evicted snapshots, and a partially applied undo can be retried directly.
 - **Clearing a session no longer shows "expired snapshots" as "no files"**: deleting a session's snapshots leaves a tombstone, which the preview and undo report as an explicit reason.
@@ -68,9 +75,10 @@ and the release steps are documented in
 ### Chores
 
 - **Automatic cleanup no longer runs once per mount**: it re-checks hourly and fires immediately when a budget is exceeded, and active-session protection covers every driving session instead of one.
-- **Package declarations are complete and the version floor is verifiable**: `peerDependencies` now names the five DSH packages the plugin actually imports (`dsh-agent`, `dsh-api-session-controller`, `dsh-client-ui-conversation`, `dsh-client-ui-input-trigger`, `dsh-client-ui-session`), and `npm run verify:compat` pins the tree to `0.2.1-rc.5` and `0.2.2-rc.5` in turn, rerunning every typecheck config and the whole suite (both lines pass). The attachment read adapts to both signatures. The `0.2.0` line is not claimed — it lacks `dsh-error` / `dsh-working-directory` and its token meter predates the marker-aware fold — and no `0.3.x` release exists yet.
+- **Package declarations are complete and the version floor is verifiable**: `peerDependencies` now names the five DSH packages the plugin actually imports (`dsh-agent`, `dsh-api-session-controller`, `dsh-client-ui-conversation`, `dsh-client-ui-input-trigger`, `dsh-client-ui-session`), and `npm run verify:compat` pins the tree to `0.2.1-rc.5` and `0.2.2-rc.5` in turn, rerunning every typecheck config and the whole suite (both lines pass). The attachment read adapts to both signatures. The `0.2.0` line is not claimed — it lacks `dsh-error` / `dsh-working-directory` — and no `0.3.x` release exists yet.
+- **A corrupted session can be repaired**: decode with `scripts/session-decode.mjs`, reorder `turn`/`step` in occurrence order, then re-encode with `scripts/session-encode.mjs` to make an affected log pass validation again; the original file stays backed up.
 
-**Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.5.5...v0.6.0
+**Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.5.5...v0.6.1
 
 ## [0.5.5] - 2026-11-19
 
