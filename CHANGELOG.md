@@ -6,6 +6,28 @@ and the release steps are documented in
 
 <!-- Release notes for v0.15.0 and earlier live in the GitHub Releases. -->
 
+## [0.6.7] - 2026-11-27
+
+> 适配 DSH `>=0.2.1-alpha.3 <0.3.1-0`（内测版）
+
+### 新增功能
+- **回退历史页标题右侧显示插件版本号**：设置 → 回退历史 的标题旁现在有一个版本徽标（`0.6.7` 这类短串），值来自构建时由 esbuild 注入的 `package.json` 版本（`src/client/build-info.ts` 的 `PLUGIN_VERSION`）；在浏览器里直接能看到「当前加载的是哪个构建」，不必再翻日志或 profile 目录。测试环境下没有构建期常量，回退为 `dev`。
+
+### 修复
+- **撤销重新只对最新的一次回退开放**：上一版允许撤任一仍未撤销的条目，撤较早的会自动级联回滚它之后的回退。实际上「先撤更新的」跟「一起撤」是两件事：前者用户点两次、每次都看得见状态变化，后者是一次点击里悄悄改掉别的行。现在回到严格链路 —— 只有最新一次未撤销的回退可点，更早的行保留按钮但禁用，并写明「先撤销更新的 N 次回退，才能撤销这条」；宿主同步恢复 `rewind/undo-not-top` 拒绝，绕过界面直接调 RPC 也拿不到越级撤销。文件层仍保留最近 10 份 `completed` journal，所以「撤掉新的 → 旧的自然变成可撤」不会因为撤销记录被回收而失败；被更新的回退切掉的那段重放仍会在撤销更早条目时一并切掉，同一段对话不会在日志里出现两次。证据：`tests/undo-cascade.test.ts` 的「拒绝越级」「先撤新的再撤旧的」两条用例、`tests/client-settings-section.test.ts` 的「禁用较早行」用例，以及宿主门禁 S4 从「断言级联」改为「断言拒绝 + 依次放行」。
+
+---
+
+> DSH `>=0.2.1-alpha.3 <0.3.1-0` supported. Internal alpha.
+
+### New Features
+- **The rewind-history page shows the plugin version beside its heading**: Settings → Rewind history now carries a version badge next to the title (a short string such as `0.6.7`), taken from the `package.json` version esbuild bakes into the client bundle (`PLUGIN_VERSION` in `src/client/build-info.ts`). The loaded build is visible in the browser instead of having to be dug out of logs or the profile directory; the test runner has no build-time constant and falls back to `dev`.
+
+### Fixes
+- **Undo is back to the newest rewind only**: the previous build let any still-live entry be undone, quietly rolling the newer ones back as a cascade. "Undo the newer one first" and "undo them together" are different promises: the first is two clicks with a visible state change each, the second edits rows the user never touched. The chain is strict again — only the newest live rewind is clickable, older rows keep a **disabled** button that names the rows to go first ("Undo the N newer rewind(s) first"), and the host refuses the jump with `rewind/undo-not-top` so a direct RPC call cannot skip the UI. The file layer still keeps the newest 10 `completed` journals, so "undo the newer one, then the older one becomes legal" does not die when a newer rewind retires an undo record; replay spans left behind by the newer undo are still cut out when the older one is undone, so no dialogue appears twice in the log. Evidence: `tests/undo-cascade.test.ts` (the refusal, and the older undo after the newer one), `tests/client-settings-section.test.ts` (the disabled older row), and host gate S4 now asserts refusal-then-permission instead of a cascade.
+
+**Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.6.6...v0.6.7
+
 ## [0.6.6] - 2026-11-27
 
 > 适配 DSH `>=0.2.1-alpha.3 <0.3.1-0`（内测版）

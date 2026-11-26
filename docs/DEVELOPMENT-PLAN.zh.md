@@ -1,6 +1,6 @@
 # 开发计划：当前状态与后续路线图
 
-> 本文件描述 **0.6.6** 的基线与下一步工作，不记录已完成的过程叙事。
+> 本文件描述 **0.6.7** 的基线与下一步工作，不记录已完成的过程叙事。
 > 机制细节见 [开发指南](DEVELOPMENT-GUIDE.zh.md)；变更历史见 [CHANGELOG](../CHANGELOG.md)；
 > 兼容性结论见 [compat/audit](compat/audit.md)。
 
@@ -8,7 +8,7 @@
 
 | 项 | 现状 | 事实来源 |
 | --- | --- | --- |
-| 版本 | `0.6.6` | [package.json](../package.json) |
+| 版本 | `0.6.7` | [package.json](../package.json) |
 | 定位 | 同窗口就地回退对话 + 写前快照还原工作区文件 | [README](../README.md) |
 | 包形态 | 双面插件（host `lib/index.js` + client `lib/client.js`），一个 bundle row | `cordis.patch.yml`、`package.json` |
 | 运行环境 | Node `>=24.9.0`，DSH `>=0.2.1-alpha.3 <0.3.1-0` | `engines` |
@@ -45,7 +45,7 @@
 - 存在发布工作流：触发于 `v*` tag → 校验 tag 与 `package.json` 版本一致 → 跑全检 → 先跑 `node scripts/changelog-extract.mjs <tag>`（失败即中止）→ `npm publish --provenance` → 用抽取结果创建 GitHub Release；已发布版本跳过（幂等）。
 - `release/release.md` 与 `.github/workflows/` 实况一致（不再需要"未来工作流"清单），Trusted Publisher 段落在配置完成后可用。
 - 一次 `workflow_dispatch` 干跑（不发布）能跑通。
-- 发布前置：`node scripts/changelog-extract.mjs <tag>` 先通过（`v0.6.6` 已通过）；compare 基线是 `v0.6.5`——`v0.6.0` 从未发布，`v0.6.1` 已发到 npm 但未打 tag，`v0.6.2` 的兼容改动并入 0.6.5，`v0.6.5` 已提交并打 tag 但未发到 npm。
+- 发布前置：`node scripts/changelog-extract.mjs <tag>` 先通过（`v0.6.7` 已通过）；compare 基线是 `v0.6.6`——`v0.6.0` 从未发布，`v0.6.1` 已发到 npm 但未打 tag，`v0.6.2` 的兼容改动并入 0.6.5，`v0.6.5` 与 `v0.6.6` 已提交并打 tag 但均未发到 npm。
 
 **第一步**：在仓库根建 `.github/workflows/ci.yml`，内容为 `actions/checkout@v4` + `actions/setup-node@v4`（`node-version: 24`）+ `npm ci` + `npm run check`；先只做 CI，不碰发布，跑通一次 PR 再继续。
 

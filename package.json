@@ -1,6 +1,6 @@
 {
   "name": "dsh-nonead-prompt-rewind",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "description": "In-window conversation rewind with workspace file restore",
   "icon": "./assets/icon.svg",
   "keywords": [
