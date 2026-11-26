@@ -8,9 +8,11 @@ and the release steps are documented in
 
 ## [Unreleased]
 
-## [0.6.2] - 2026-11-26
+## [0.6.5] - 2026-11-26
 
 > 适配 DSH `>=0.2.1-alpha.3 <0.3.1-0`（内测版）
+
+本版汇总了自 `v0.5.5` 以来的主要变更（0.6.2 的兼容改动并入本版发布）。
 
 ### 其他变更
 
@@ -28,7 +30,7 @@ and the release steps are documented in
 - **The declared range narrows to its measured floor, `0.2.1-alpha.3`**: `verify:compat` now runs every installable release inside the range — all 17, from `0.2.1-alpha.3` through `0.2.1-rc.5`, `0.2.2-alpha.2` through `0.2.2-rc.5`, and `0.2.3-alpha.1` / `0.2.3-alpha.2` — pinning each tree and running the three typecheck configs plus the full suite; all pass. `0.2.1-alpha.1` and `0.2.1-alpha.2` install but predate the marker-aware token fold (`stateVersion 6`), so a rewind there publishes `12` where the pre-cut log says `48`; the plugin cannot correct a host-side fold from outside, so they are recorded as unclaimed and re-measured with `--unclaimed` — the script says so if they ever start passing and belong back in the claimed set.
 - **Adapted to cordis 4.2's root-context move**: cordis 4.2 replaced the inherited `ctx.root` property with the `ctx[Context.root]` symbol slot, which broke compilation outright (`TS2576`). The plugin now reads that symbol first and falls back to the old property, so the `/dsh-rewind` RPC channel still re-bases service implementations onto the root context on both cordis generations — the settings page's rewind history no longer degrades to "host RPC unavailable" on an older host.
 
-**Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.6.1...v0.6.2
+**Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.5.5...v0.6.5
 
 ## [0.6.1] - 2026-11-22
 
