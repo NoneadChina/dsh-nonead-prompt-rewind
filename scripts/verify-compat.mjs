@@ -10,8 +10,8 @@
  * including after a failure, so a run never leaves a mixed dependency tree.
  *
  * Usage: npm run verify:compat [-- version ...]
- *   npm run verify:compat                    # the default matrix
- *   npm run verify:compat -- 0.2.2-rc.5      # a single release
+ *   npm run verify:compat                  # the default matrix
+ *   npm run verify:compat -- 0.2.3-alpha.2 # a single release
  *
  * A version whose packages cannot be installed (a release that never shipped
  * every package the plugin imports) is reported as `unavailable`, not as a
@@ -28,7 +28,7 @@ const original = readFileSync(pkgPath, 'utf8')
 const baseline = JSON.parse(original).devDependencies ?? {}
 const CORE_PREFIX = '@deepseek-ai/dsh-'
 const coreNames = Object.keys(baseline).filter((name) => name.startsWith(CORE_PREFIX))
-const DEFAULT_MATRIX = ['0.2.1-rc.5', '0.2.2-rc.5']
+const DEFAULT_MATRIX = ['0.2.1-rc.5', '0.2.2-rc.5', '0.2.3-alpha.2']
 const VERSION = /^\d+\.\d+\.\d+(?:-[a-z]+\.\d+)?$/
 
 const requested = process.argv.slice(2).filter((argument) => !argument.startsWith('-'))

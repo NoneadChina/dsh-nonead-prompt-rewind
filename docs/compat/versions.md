@@ -20,7 +20,8 @@ npm run verify:compat -- 0.2.2-rc.5    # one release
 | Release | Packages | Result | Notes |
 | --- | --- | --- | --- |
 | `0.2.1-rc.5` | `@deepseek-ai/dsh-error` absent | pass | Every typecheck config and the full suite pass. The plugin imports none of the absent package, so the release is usable: the install step keeps the baseline version of a package that release never published and reports it as `absent`. |
-| `0.2.2-rc.5` | complete | pass | Baseline (`devDependencies`), and the version the desktop profile ships. |
+| `0.2.2-rc.5` | complete | pass | The `latest` and `next` dist-tags, and the version the desktop profile ships. |
+| `0.2.3-alpha.2` | complete | pass | Baseline (`devDependencies`); the `alpha` dist-tag. Two things moved: cordis `4.2` replaced the inherited `ctx.root` property with the symbol slot `ctx[Context.root]` (see the shim below), and the release added `dsh-brand`, `dsh-workspace`, `dsh-util-values` and `dsh-system-prompt` as peers of other packages — none is added to `devDependencies`, because nothing on the plugin's load path imports them and the suite resolves without them. |
 
 ## The 0.2.0 line: not claimed
 
@@ -41,10 +42,10 @@ loads there.
 ## The 0.3.0 line: nothing to claim
 
 `npm view @deepseek-ai/dsh dist-tags` currently returns
-`latest = 0.2.2-rc.5`, `next = 0.2.2-rc.5`, `alpha = 0.2.2-alpha.3`, with the
-package last modified on 2026-11-19. There is no `0.3.x` release, so there is
-nothing to test against; `engines.dsh` stops below `0.3.1-0` so a future 0.3.0
-host refuses the plugin instead of loading it half-compatible.
+`latest = 0.2.2-rc.5`, `next = 0.2.2-rc.5`, `alpha = 0.2.3-alpha.2`. There is no
+`0.3.x` release, so there is nothing to test against; `engines.dsh` stops below
+`0.3.1-0` so a future 0.3.0 host refuses the plugin instead of loading it
+half-compatible.
 
 When 0.3 lands:
 
@@ -57,14 +58,22 @@ When 0.3 lands:
 
 ## Compatibility shims
 
-`main` carries exactly one, and only because both sides of it are live in a
-claimed release:
+`main` carries two, each only because both sides of it are live in a claimed
+release:
 
 - **Attachment read** (`src/client/index.ts`). `0.2.2` takes the complete
   structured reference (`{ attachmentId, mediaType, bytes, width, height, name? }`);
   `0.2.1` takes the bare `AttachmentId`. The plugin's reader calls the
   structured form first and retries with the id when the host returns an error
   or throws, so an image-bearing refill works on both lines.
+
+- **Root context access** (`src/index.ts`, `rootContextOf`). cordis `4.0`
+  exposes the application root as the inherited `ctx.root` property; cordis
+  `4.2`, shipped with `0.2.3-alpha.2`, replaced it with the symbol slot
+  `ctx[Context.root]` (`Symbol.for('cordis.root')`). The reader asks for the
+  symbol first and falls back to the property, so the host-RPC re-base — the fix
+  for "host RPC unavailable" in Settings → Rewind history — keeps working on
+  every claimed line.
 
 Everything else is written against the structural faces the plugin declares for
 itself, not against exported types, so a relocated or renamed upstream type does
