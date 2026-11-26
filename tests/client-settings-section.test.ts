@@ -207,7 +207,7 @@ describe('SettingsSection (history page)', () => {
     expect(loadHistory.mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('offers undo only on the chain tail', async () => {
+  it('offers undo on every still-live rewind, not just the newest', async () => {
     const container = await mount({
       loadHistory: async () => ({
         workspace: { key: 'ws-w1' },
@@ -219,10 +219,11 @@ describe('SettingsSection (history page)', () => {
     })
     const undoButtons = [...container.querySelectorAll('button')]
       .filter(button => button.textContent === 'settings.history.undo')
-    expect(undoButtons).toHaveLength(1)
-    // The single undoable row is the newest one (@7), not the older @3.
-    const row = undoButtons[0]?.closest('li')
-    expect(row?.textContent).toContain('@7')
+    // Both rows can be undone; undoing the older one cascades the newer back.
+    expect(undoButtons).toHaveLength(2)
+    const rows = undoButtons.map(button => button.closest('li')?.textContent ?? '')
+    expect(rows.some(text => text.includes('@3'))).toBe(true)
+    expect(rows.some(text => text.includes('@7'))).toBe(true)
   })
 
   it('undoes only after a second click, then reloads', async () => {
@@ -258,7 +259,7 @@ describe('SettingsSection (history page)', () => {
     expect(loadHistory).toHaveBeenCalledTimes(1)
   })
 
-  it('marks a superseded row instead of hiding its undo silently', async () => {
+  it('warns that an older row rolls newer rewinds back first', async () => {
     const container = await mount({
       loadHistory: async () => ({
         workspace: { key: 'ws-w1' },
@@ -271,10 +272,29 @@ describe('SettingsSection (history page)', () => {
     const rows = [...container.querySelectorAll('.dsh-rewind-history-row')]
     const older = rows.find(row => row.textContent?.includes('@3'))
     const newer = rows.find(row => row.textContent?.includes('@7'))
-    expect(older?.textContent).toContain('settings.history.superseded')
-    // The older row has no undo button: only the chain tail is actionable.
-    expect(older?.querySelector('button')).toBeNull()
+    // The older row is still actionable, and it says what undoing it does.
+    expect(older?.textContent).toContain('settings.history.available')
+    expect(older?.textContent).toContain('settings.history.cascades')
+    expect(older?.querySelector('button')).not.toBeNull()
+    // The newest row is the chain tail: nothing above it to roll back.
     expect(newer?.textContent).toContain('settings.history.available')
+    expect(newer?.textContent).not.toContain('settings.history.cascades')
+  })
+
+  it('names a lost undo record instead of offering a dead button', async () => {
+    // The newest rewind retired this row's journal, so the host reports it as
+    // not undoable with `undoRecordGone`. "Conversation only" would be a
+    // different lie: this rewind did touch files.
+    const container = await mount({
+      loadHistory: async () => ({
+        workspace: { key: 'ws-w1' },
+        entries: [entry({ opId: 'gone', undoable: false, undoRecordGone: true })],
+      }),
+    })
+    const row = container.querySelector('.dsh-rewind-history-row')
+    expect(row?.textContent).toContain('settings.history.undoRecordGone')
+    expect(row?.textContent).not.toContain('settings.history.conversationOnly')
+    expect(row?.querySelector('button')).toBeNull()
   })
 
   it('styles a refusal as an error and announces it', async () => {

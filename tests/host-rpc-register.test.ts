@@ -2,21 +2,23 @@
  * Host-RPC registration probes.
  *
  * The rewind RPC channel lives on the Host Connection service, and `rpc.handle`
- * stores its route through `owner.effect(() => owner.webServer.register(route))`
- * where `owner` is the CONNECTION service's own define-site context. When
- * `webServer` and `connection` are provided by two different plugin fibres — the
- * layout the harness always has — that lookup walks the provider's fibre chain,
- * dead-ends at the root fibre (`runtime === null`) and throws
- * `cannot get property "webServer" without inject`. The channel then never
- * exists, and every client query degrades to "host RPC is unavailable"
- * (Settings → Rewind history shows exactly that).
+ * stores its route through `owner.effect(() => owner.get('webServer').register(route))`
+ * where `owner` is whichever context the CONNECTION service is read from. The
+ * harness provides `webServer` and `connection` in two DIFFERENT plugin fibres, so
+ * an owner that only resolved `connection` finds no WebServer and registration
+ * throws — on cordis 4.0 as `cannot get property "webServer" without inject`, on
+ * 4.2 as `connection: RPC channels require a WebServer`. The channel then never
+ * exists and every client query degrades to "host RPC is unavailable" (Settings →
+ * Rewind history shows exactly that, and the web client reports HTTP 405 because
+ * the route was never mounted).
  *
- * These probes pin both halves: the bare registration fails on this harness
- * line, and `rebaseOnRoot` (the shipped fix) registers through.
+ * These probes pin both halves: the single-service owner fails on the shape the
+ * harness has, and `rebaseOnOwner` onto a scope that injects BOTH services
+ * registers through.
  */
 import { describe, expect, it } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
-import { rebaseOnRoot, rawServiceOf, rootContextOf } from '../src/index.ts'
+import { rebaseOnOwner, rawServiceOf } from '../src/index.ts'
 
 /** Stand-in for the harness `webServer` service: records the routes it mounts. */
 class FakeWebServer extends Service {
@@ -31,8 +33,9 @@ class FakeWebServer extends Service {
 
 /**
  * Stand-in for the harness `connection` service, reproducing the exact shape the
- * real one has: constructor state on the instance, and `rpc.handle` taking its
- * owner from `this.ctx` then reading `owner.webServer` inside an effect.
+ * real one has: constructor state on the instance, `rpc.handle` taking its owner
+ * from `this.ctx`, and the owner resolving `webServer` THROUGH `get` inside an
+ * effect (cordis 4.2's shape; 4.0 threw on the same read).
  */
 class FakeConnection extends Service {
   /** Constructor state the re-based wrapper must still expose. */
@@ -43,8 +46,11 @@ class FakeConnection extends Service {
     return { handle: (channel: string) => this.register(owner, channel) }
   }
   register(owner: Context, channel: string): () => Promise<void> {
-    const server = (owner as unknown as { readonly webServer: FakeWebServer }).webServer
-    return owner.effect(() => server.register({ path: channel }), `rpc channel ${channel}`)
+    return owner.effect(() => {
+      const server = owner.get('webServer') as FakeWebServer | undefined
+      if (server === undefined) throw new Error('connection: RPC channels require a WebServer')
+      return server.register({ path: channel })
+    }, `rpc channel ${channel}`)
   }
 }
 
@@ -67,39 +73,21 @@ function settle(): Promise<void> {
 }
 
 describe('host RPC channel registration', () => {
-  it('fails through the bare service when webServer lives in another fibre', async () => {
-    const { root } = harness()
-    const errors: string[] = []
-    root.plugin({
-      name: 'probe-bare',
-      apply(ctx) {
-        ctx.inject(['connection'], (scope) => {
-          try {
-            (scope.get('connection') as unknown as FakeConnection).rpc.handle('/dsh-rewind', () => null)
-          } catch (error) {
-            errors.push(error instanceof Error ? error.message : String(error))
-          }
-        })
-      },
-    })
-    await settle()
-    expect(errors).toHaveLength(1)
-    expect(errors[0]).toContain('without inject')
-  })
-
-  it('registers the channel through the root-rebased service', async () => {
+  it('registers the channel when the owner declares webServer itself', async () => {
     const { root } = harness()
     const errors: string[] = []
     let disposed = false
     let token = ''
+    let sawWebServer = false
     root.plugin({
       name: 'probe-rebased',
       apply(ctx) {
-        ctx.inject(['connection'], (scope) => {
+        ctx.inject(['connection', 'webServer'], (scope) => {
           try {
+            sawWebServer = scope.get('webServer') !== undefined
             const raw = rawServiceOf(scope, 'connection') as FakeConnection | undefined
             expect(raw).toBeDefined()
-            const host = rebaseOnRoot(raw!, rootContextOf(scope)!)
+            const host = rebaseOnOwner(raw!, scope)
             expect(host).toBeDefined()
             // Constructor state must survive the re-base: the route handler runs
             // long after registration and reads instance fields.
@@ -115,8 +103,28 @@ describe('host RPC channel registration', () => {
     await settle()
     expect(errors).toEqual([])
     expect(disposed).toBe(true)
+    expect(sawWebServer).toBe(true)
     expect(token).toBe('instance-token')
     expect(webServerOf(root).routes).toContain('/dsh-rewind-rpc')
+  })
+
+  it('unmounts the route when the injected scope is disposed', async () => {
+    const { root } = harness()
+    let stop: (() => Promise<void>) | undefined
+    const fiber = root.plugin({
+      name: 'probe-dispose',
+      apply(ctx) {
+        ctx.inject(['connection', 'webServer'], (scope) => {
+          const raw = rawServiceOf(scope, 'connection') as FakeConnection
+          const host = rebaseOnOwner(raw, scope)!
+          stop = host.rpc.handle('/dsh-rewind-dispose', () => null)
+        })
+      },
+    })
+    await settle()
+    expect(webServerOf(root).routes).toContain('/dsh-rewind-dispose')
+    await fiber.dispose()
+    expect(webServerOf(root).routes).not.toContain('/dsh-rewind-dispose')
   })
 
   it('reads the raw instance out of a traced context', async () => {
@@ -141,7 +149,7 @@ describe('host RPC channel registration', () => {
   })
 
   it('returns undefined for a service the wrapper cannot be rebuilt from', () => {
-    expect(rebaseOnRoot({} as object, {})).toBeUndefined()
+    expect(rebaseOnOwner({} as object, {})).toBeUndefined()
     expect(rawServiceOf({}, 'connection')).toBeUndefined()
   })
 })

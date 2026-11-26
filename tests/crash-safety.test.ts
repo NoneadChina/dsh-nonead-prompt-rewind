@@ -546,7 +546,7 @@ describe('reconciliation auto-heal and failure reporting', () => {
     expect(await readFile(a, 'utf8')).toBe('A0')
   })
 
-  it('repeated restores recycle terminal journals (bounded storage)', async () => {
+  it('keeps a bounded set of undo records instead of recycling each rewind', async () => {
     const a = await touch('a.txt', 'A0')
     await store.recordEntry(session, { callId: 'ca', anchorSeq: 5, path: a, before: 'A0' })
     for (let round = 1; round <= 4; round++) {
@@ -554,9 +554,11 @@ describe('reconciliation auto-heal and failure reporting', () => {
       await store.restoreAfter(session, 5, unlink) // one completed journal each
       expect(await readFile(a, 'utf8')).toBe('A0')
     }
-    // Every pass recycled the earlier terminal journals: at most the newest
-    // one survives, never one journal per rewind.
-    expect((await readdir(store.sessionDir(session))).filter(n => journalFileName(n))).toHaveLength(1)
+    // Layered undo needs the older records too, so they are not recycled the
+    // moment a newer one starts. Storage stays bounded by MAX_UNDOABLE_JOURNALS.
+    const journals = (await readdir(store.sessionDir(session))).filter(n => journalFileName(n))
+    expect(journals).toHaveLength(4)
+    expect((await store.listUndoableOpIds(session)).size).toBe(4)
     expect(await store.reconcileRestores(session)).toEqual([])
   })
 

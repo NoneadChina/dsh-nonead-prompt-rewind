@@ -96,6 +96,38 @@ export interface HistoryEntry {
   undoneAt?: number
   undoOutcome?: 'success' | 'partial'
   undoMode?: UndoMode
+  /**
+   * Log seq range and surface seqs of the events this entry's UNDO appended
+   * when it republished the withdrawn dialogue. Recorded so that undoing a
+   * STILL-EARLIER rewind can cut the replay back out first instead of letting
+   * the same text appear twice in the log.
+   */
+  replayedFromSeq?: number
+  replayedToSeq?: number
+  readonly replayedSurfaceSeqs?: number[]
+  /** When the replay above was cut back out (idempotence stamp). */
+  replayCutAt?: number
+  /**
+   * `opId` of the newer undo that rolled this entry back as a cascade step, so
+   * its dialogue was never republished separately.
+   */
+  cascadedBy?: string
+}
+
+/**
+ * One entry as the settings page receives it: the ledger's own fields plus
+ * state DERIVED per read. Derived flags are never persisted — a journal can be
+ * retired at any time, so a stored copy would go stale in exactly the case it
+ * exists to describe.
+ */
+export type HistoryEntryView = HistoryEntry & {
+  /**
+   * The ledger marked this rewind `undoable`, but the journal an undo needs is
+   * gone (a newer restore retired it, or pruning did). `undoable` arrives as
+   * `false` in that case, so the page can explain the missing button instead of
+   * offering one that can only fail.
+   */
+  readonly undoRecordGone?: boolean
 }
 
 /** One partition file. */
@@ -376,7 +408,14 @@ export class HistoryStore {
     return found
   }
 
-  /** The newest not-yet-undone entry of one session (the rewind chain tail). */
+  /**
+   * The newest not-yet-undone entry of one session.
+   *
+   * NOT an undo gate any more: any still-live entry may be undone, and undoing
+   * an older one cascades the newer ones back first. This stays because the
+   * history view needs to know which row is the newest (to explain that nothing
+   * sits above it, so nothing will be cascaded).
+   */
   static chainTail(entries: readonly HistoryEntry[], sessionId: string): HistoryEntry | undefined {
     let tail: HistoryEntry | undefined
     for (const entry of entries) {
@@ -386,7 +425,7 @@ export class HistoryStore {
     return tail
   }
 
-  /** Whether `entry` is the chain tail (the only undoable position). */
+  /** Whether `entry` is the newest live entry of its session (see `chainTail`). */
   static isChainTail(entries: readonly HistoryEntry[], entry: HistoryEntry): boolean {
     return HistoryStore.chainTail(entries, entry.sessionId)?.opId === entry.opId
   }

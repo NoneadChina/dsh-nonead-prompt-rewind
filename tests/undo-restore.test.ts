@@ -12,7 +12,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { SnapshotStore } from '../src/snapshot.ts'
+import { MAX_UNDOABLE_JOURNALS, SnapshotStore } from '../src/snapshot.ts'
 
 let root: string
 let store: SnapshotStore
@@ -222,26 +222,47 @@ describe('undoRestore', () => {
     expect(await readFile(created, 'utf8')).toBe('created-later')
   })
 
-  it('retires the older undo record when a newer rewind starts', async () => {
+  it('keeps the older undo record so a layered undo stays possible', async () => {
     const first = await touch('first.txt', 'v0')
     await store.recordEntry(session, { callId: 'c1', anchorSeq: 5, path: first, before: 'v0' })
     await writeFile(first, 'v1', 'utf8')
     await store.restoreAfter(session, 5, unlink, undefined, { opId: 'op-old' })
     expect(await readFile(first, 'utf8')).toBe('v0')
 
-    // A second rewind supersedes the first one's undo record.
+    // A second rewind must NOT retire the first one's undo record: undoing an
+    // older rewind is supported (it cascades the newer ones back first), so the
+    // journal has to stay addressable.
     const second = await touch('second.txt', 'w0')
     await store.recordEntry(session, { callId: 'c2', anchorSeq: 6, path: second, before: 'w0' })
     await writeFile(second, 'w1', 'utf8')
     await store.restoreAfter(session, 6, unlink, undefined, { opId: 'op-new' })
     expect(await readFile(second, 'utf8')).toBe('w0')
 
-    await expect(store.undoRestore(session, 'op-old', unlink)).rejects.toMatchObject({
-      code: 'undo-unavailable',
-      reason: 'journal-missing',
-    })
+    expect(await store.listUndoableOpIds(session)).toEqual(new Set(['op-old', 'op-new']))
+    const older = await store.undoRestore(session, 'op-old', unlink)
+    expect(older.failed).toEqual([])
+    expect(await readFile(first, 'utf8')).toBe('v1')
     const undone = await store.undoRestore(session, 'op-new', unlink)
     expect(undone.failed).toEqual([])
     expect(await readFile(second, 'utf8')).toBe('w1')
+  })
+
+  it('caps the undo records it keeps, dropping only the oldest', async () => {
+    // The bound is a storage guard, not the undo rule: with MAX_UNDOABLE
+    // journals kept, an old record eventually falls away and the history
+    // endpoint reports that row as `undoRecordGone` instead of offering it.
+    const keep = MAX_UNDOABLE_JOURNALS
+    for (let index = 0; index < keep + 2; index += 1) {
+      const file = await touch(`many-${index}.txt`, 'a')
+      await store.recordEntry(session, { callId: `m${index}`, anchorSeq: 10 + index, path: file, before: 'a' })
+      await writeFile(file, 'b', 'utf8')
+      await store.restoreAfter(session, 10 + index, unlink, undefined, { opId: `op-${index}` })
+    }
+    const live = await store.listUndoableOpIds(session)
+    expect(live.size).toBeLessThanOrEqual(keep)
+    // The newest survive; the oldest two are the ones retired.
+    expect(live.has(`op-${keep + 1}`)).toBe(true)
+    expect(live.has('op-0')).toBe(false)
+    expect(live.has('op-1')).toBe(false)
   })
 })

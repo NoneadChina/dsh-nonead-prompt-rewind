@@ -105,7 +105,7 @@ When 0.3 lands:
 
 ## Compatibility shims
 
-`main` carries two, each only because both sides of it are live in a claimed
+`main` carries one, and only because both sides of it are live in a claimed
 release:
 
 - **Attachment read** (`src/client/index.ts`). `0.2.2` takes the complete
@@ -114,13 +114,14 @@ release:
   structured form first and retries with the id when the host returns an error
   or throws, so an image-bearing refill works on both lines.
 
-- **Root context access** (`src/index.ts`, `rootContextOf`). cordis `4.0`
-  exposes the application root as the inherited `ctx.root` property; cordis
-  `4.2`, shipped with `0.2.3-alpha.2`, replaced it with the symbol slot
-  `ctx[Context.root]` (`Symbol.for('cordis.root')`). The reader asks for the
-  symbol first and falls back to the property, so the host-RPC re-base — the fix
-  for "host RPC unavailable" in Settings → Rewind history — keeps working on
-  every claimed line.
+There is deliberately **no** root-context shim any more. 0.6.5 read
+`ctx[Context.root]` and fell back to the inherited `ctx.root` so that the
+host-RPC channel could re-base its service onto the application root; on
+`0.2.3-alpha.2` that compiles but still does not mount the channel, because
+`connection.rpc.handle` resolves `webServer` from the context the Connection
+service is *read from*, and the root resolves no WebServer either. See
+[U10 in audit.md](audit.md#u10--generic-rpc-route-registration-fails-from-a-plugin-scope)
+for the invariant and the working registration.
 
 Everything else is written against the structural faces the plugin declares for
 itself, not against exported types, so a relocated or renamed upstream type does

@@ -1,14 +1,16 @@
 /**
  * Rewind archives: the folded-away conversation, written to disk at rewind time.
  *
- * WHY: a rewind is irreversible for the CONVERSATION. It appends a marker whose
+ * WHY: a rewind leaves the CONVERSATION cut. It appends a marker whose
  * `surfaceOp` replaces the target and everything after it, and the surface is
  * rebuilt by replaying the log through `foldSurface` — the host offers only
- * `append` and `replace`, so there is no way to unfold it again. The events stay
- * in the append-only log, but nothing in the UI can reach them.
+ * `append` and `replace`, so the surface itself has no inverse. The events stay
+ * in the append-only log, and the undo path (`replayDialog`) republishes them as
+ * a new turn, but nothing in the UI can unfold the original turn in place.
  *
- * This module closes that gap cheaply: before the marker shadows them, render the
- * affected surface events into a markdown archive under
+ * This module covers the case where that undo is unavailable (journal pruned, or
+ * a different machine): before the marker shadows them, render the affected
+ * surface events into a markdown archive under
  * `<dsh home>/rewind-archives/<session>/<opId>.md`. The history entry carries the
  * relative path, so the settings page can offer "open the archive" later.
  *

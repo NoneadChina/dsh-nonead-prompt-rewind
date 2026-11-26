@@ -270,17 +270,18 @@ fails closed when it is absent.
 | `candidates` | `{ sessionId }` | `{ candidates }` | human user messages on the surface, newest first |
 | `history` | `{ sessionId }` | `{ workspace, entries }` | partition derived host-side |
 | `history.clear` | `{ sessionId }` | `{ cleared }` | records only |
-| `undo` | `{ sessionId, opId }` | `{ kind: 'ok' \| 'partial', restored, deleted, replayed, failed }` | chain tail, once per entry; files + dialogue replay |
+| `undo` | `{ sessionId, opId }` | `{ kind: 'ok' \| 'partial', restored, deleted, replayed, cascaded, failed }` | any still-live entry, once per entry; cascades newer rewinds back, cuts their replays, then restores files + replays dialogue |
 | `archive` | `{ sessionId, opId }` | `{ path, text }` | the rewind's rendered conversation archive (markdown); the only way back to the full folded transcript, tool calls included |
 | `caps` | `{ sessionId }` | `{ history, undo, fileCheckpointing }` | what THIS host provides |
 
 Failures use a stable `{ ok: false, error: { code, message, details } }` envelope; codes are
 `rewind/bad-request`, `rewind/agents-unavailable`, `rewind/session-not-found`,
 `rewind/unknown-entry`, `rewind/undo-cross-workspace`, `rewind/undo-other-session`,
-`rewind/already-undone`, `rewind/not-undoable`, `rewind/undo-not-top`, `rewind/stale-undo`,
+`rewind/already-undone`, `rewind/not-undoable`, `rewind/stale-undo`,
 `rewind/undo-failed`, `rewind/unknown-endpoint` and `rewind/failed`. The channel is registered
-from the root context (`ctx.inject(['connection'])`) because `rpc.handle` re-reads the owner's
-web server when it runs; disposal is tied to the plugin's fiber. Without a connection service
+from a scope that injects BOTH services (`ctx.inject(['connection', 'webServer'])`) because
+`rpc.handle` re-reads `webServer` off the context it was read from; disposal is tied to the
+plugin's fiber. Without a connection service
 the plugin still rewinds by command — only the graphical surfaces degrade.
 ## 8. Compatibility strategy
 - **Admission boundary.** `engines.node` is `>=24.9.0` and `engines.dsh` is

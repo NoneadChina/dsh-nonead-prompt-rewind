@@ -197,6 +197,11 @@ function makeAgent(id, session, status = 'idle', inbox = makeInbox()) {
   const agent = {
     id, session, status, inbox,
     options: { provider: 'test', model: 'test-model' },
+    // The undo's dialogue half reads the LIVE agent's idle turn counter and
+    // fails closed when it cannot. A fake agent mirrors that shape, otherwise
+    // every undo in here would report "dialogue not republished".
+    phase: { kind: 'idle', lastTurn: 0 },
+    setPhase(next) { agent.phase = next },
     // Manual compaction requires an idle agent whose maintenance task runs
     // with its own signal (ManualCompactAgentContext).
     runMaintenance: async task => {
@@ -272,6 +277,16 @@ ctx.provide('connection', {
       rpcHandlers.set(channel, handler)
       return async () => { rpcHandlers.delete(channel) }
     },
+  },
+})
+// `rpc.handle` mounts its route through a WebServer resolved from the owner
+// context, so the registration scope has to inject one: provide a stand-in that
+// records the mount, exactly like the harness's own server does.
+const webRoutes = new Map()
+ctx.provide('webServer', {
+  register: route => {
+    webRoutes.set(route.path, route)
+    return async () => { webRoutes.delete(route.path) }
   },
 })
 // The entry-write port the plugin's cleanup store addresses; the policy itself
@@ -1313,12 +1328,13 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
 // S4 / S6 / S8 / S9 — the acceptance scenarios from the development guide that
 // need several rewinds in a row or a switched-off policy.
 {
-  // S4: only the chain tail is undoable.
+  // S4: ANY still-live rewind is undoable. Undoing an older one rolls the newer
+  // ones back first (cascade) instead of refusing, because their journals hold
+  // the file states this undo has to pass through.
   const chainSession = buildSession('verify-chain')
   const chainAgent = makeAgent(chainSession.id, chainSession)
   for (let index = 0; index < 2; index += 1) {
-    // Each rewind touches a file, so both entries are `undoable` and the
-    // refusal below can only come from the chain order.
+    // Each rewind touches a file, so both entries are `undoable`.
     const chainFile = join(wsDir, `chain-${index}.txt`)
     await writeFile(chainFile, `c${index}-0`, 'utf8')
     chainSession.append('user/message', user(`chain question ${index}`), { surfaceOp: 'append' })
@@ -1331,12 +1347,26 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
     ? chainListed.value.entries.filter(entry => entry.sessionId === chainAgent.id)
     : []
   check('S4: two rewinds are recorded', chainEntries.length === 2, JSON.stringify(chainEntries.map(entry => entry.opId)))
-  const olderEntry = chainEntries[0]
-  const refusal = olderEntry === undefined
+  // Order by (at, targetSeq) so the assertion does not depend on list order.
+  const ordered = [...chainEntries].sort((a, b) => (a.at - b.at) || (a.targetSeq - b.targetSeq))
+  const olderEntry = ordered[0]
+  const newerEntry = ordered[ordered.length - 1]
+  const cascade = olderEntry === undefined
     ? { ok: true }
     : await rpc(chainAgent, 'undo', { sessionId: chainAgent.id, opId: olderEntry.opId })
-  check('S4: undoing an older entry is refused',
-    refusal.ok === false && refusal.error.code === 'rewind/undo-not-top', JSON.stringify(refusal))
+  check('S4: undoing an older entry cascades the newer one back',
+    cascade.ok === true && cascade.value.cascaded === 1 && cascade.value.kind === 'ok',
+    JSON.stringify(cascade))
+  const afterCascade = await rpc(chainAgent, 'history', { sessionId: chainAgent.id })
+  const cascadedEntry = afterCascade.ok === true && newerEntry !== undefined
+    ? afterCascade.value.entries.find(entry => entry.opId === newerEntry.opId)
+    : undefined
+  check('S4: the cascaded entry is stamped undone by the older undo',
+    cascadedEntry !== undefined
+      && cascadedEntry.undoneAt !== undefined
+      && olderEntry !== undefined
+      && cascadedEntry.cascadedBy === olderEntry.opId,
+    JSON.stringify(cascadedEntry))
 }
 
 {

@@ -205,19 +205,30 @@ a version branch; the core pair (`surfaceOp`, `rpc`) is non-negotiable and refus
 
 ### U10 — generic RPC route registration fails from a plugin scope
 
-`connection.rpc.handle` registers its route inside an effect that reads `owner.webServer`, where
-`owner` is the Connection service's own define-site context. `webServer` and `connection` are
-provided by two DIFFERENT plugin fibres, so that read walks the provider's fibre chain, dead-ends
-at the root fibre (`runtime === null`) and throws `cannot get property "webServer" without inject`.
-The channel is then never registered and every client query degrades to "host RPC is unavailable"
-(Settings → Rewind history says exactly that, and the host log carries
-`[dsh-rewind] RPC channel registration failed`). **Ask:** resolve `webServer` from the use site,
-or take the server as a parameter, so an ordinary plugin scope can register. **Stance:** re-base
-the service's define site onto the root context for the call — `rawServiceOf` reads the
-implementation out of the reflection store (a context proxy's prototype is the service CLASS, so
-deriving from the wrapper would drop constructor state), `rebaseOnRoot` re-points its `ctx` at
-the root, and `tests/host-rpc-register.test.ts` pins both the failure and the registration; remove
-the shim when upstream fixes it.
+`connection.rpc.handle` registers its route inside an effect that reads the WebServer through the
+context the Connection service is *read from* (`owner.get('webServer')` on cordis 4.2, the
+`owner.webServer` property on 4.0). `webServer` and `connection` are provided by two DIFFERENT
+plugin fibres, so an owner that only resolved `connection` finds no WebServer and registration
+throws — as `cannot get property "webServer" without inject` on cordis 4.0 and as
+`connection: RPC channels require a WebServer` on 4.2. The channel is then never registered and
+every client query degrades to "host RPC is unavailable": the host log carries
+`[dsh-rewind] RPC channel registration failed`, and the web client reports
+`transport failure for /dsh-rewind/preview: HTTP 405` because the prefix route was never mounted
+(authorised requests fall through to a method-less route). **Ask:** resolve `webServer` from the use
+site, or take the server as a parameter, so an ordinary plugin scope can register. **Stance:**
+register from a scope that injects BOTH services and re-base the service's define site onto that
+scope for the call — `ctx.inject(['connection', 'webServer'], …)` makes the WebServer part of the
+owner's own resolved services, `rawServiceOf` reads the implementation out of the reflection store
+(a context proxy's prototype is the service CLASS, so deriving from the wrapper would drop
+constructor state), `rebaseOnOwner` re-points its `ctx` at that scope, and
+`tests/host-rpc-register.test.ts` pins the registration and its disposal; remove the shim when
+upstream fixes it. Re-basing onto the ROOT instead is **not** a fix: 0.6.5 shipped that and a live
+`0.2.3-alpha.2` host still refused to mount the channel. Injecting both services cannot silently
+regress an older line: `connection.rpc.handle` itself throws `require a WebServer` whenever the
+WebServer is absent, so any host where the RPC route can work at all resolves `webServer`, and
+this is the harness's own pattern — the bundle registers its remote-stream servers with
+`ctx.inject(['connection', 'webServer'], …)` and its web host declares
+`export const inject = ['webServer', 'connection']`.
 
 ## Coverage gaps
 

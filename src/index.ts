@@ -44,6 +44,8 @@ import {
   unknownKey,
   workspaceIdOf,
   workspaceKeyFromRegistry,
+  type HistoryEntry,
+  type HistoryEntryView,
   type HistoryOutcome,
   type HistoryWorkspace,
   type WorkspaceLike,
@@ -910,6 +912,25 @@ function compactionIsOpen(session: Session): boolean {
 }
 
 /**
+ * Log positions of ONE replayed turn, captured so a later undo of an EARLIER
+ * rewind can cut it back out of the surface.
+ *
+ * A replayed dialogue is appended after the target, so undoing a still-earlier
+ * rewind would otherwise republish the same messages twice. The caller records
+ * these seqs on the history entry; undoing further back issues one
+ * `surfaceOp: { op: 'replace' }` over `fromSeq..toSeq` citing every
+ * `surfaceSeqs` node, which is exactly the shape the load validator wants.
+ */
+export interface ReplaySpans {
+  /** `turn/start` seq this replay wrote. */
+  fromSeq?: SessionSeq
+  /** `turn/end` seq this replay wrote. */
+  toSeq?: SessionSeq
+  /** Every surface node (`user/message` / `assistant/message`) it wrote. */
+  surfaceSeqs: SessionSeq[]
+}
+
+/**
  * Republish a withdrawn dialogue as ONE new turn at the end of the log.
  *
  * This is the undo path. A surface `replace` has no inverse, and appending bare
@@ -927,12 +948,15 @@ function compactionIsOpen(session: Session): boolean {
  *   the caller has one. Omit it only when no agent is attached (a host-side
  *   undo of a detached session), where a later construction reads the counter
  *   back from the log.
+ * @param out - optional sink for the written log positions (see
+ *   {@link ReplaySpans}); filled only as the replay progresses.
  * @returns how many messages were republished.
  */
 export function replayDialog(
   session: Session,
   dialog: readonly RestoreDialogItem[],
   agent?: unknown,
+  out?: ReplaySpans,
 ): number {
   if (dialog.length === 0) return 0
   if (turnIsOpen(session)) {
@@ -959,7 +983,8 @@ export function replayDialog(
     session.append('step/end', { turn, step })
     open = false
   }
-  session.append('turn/start', { turn })
+  const opening = session.append('turn/start', { turn })
+  if (out !== undefined) out.fromSeq = opening.seq
   try {
     for (const item of dialog) {
       // A prompt opens its own step; an answer rides on the open one. An answer
@@ -972,13 +997,14 @@ export function replayDialog(
         open = true
       }
       if (item.role === 'user') {
-        session.append(
+        const written = session.append(
           'user/message',
           createUserMessage({ content: item.content as ContentBlock[], source: { kind: 'user' } }),
           { surfaceOp: 'append' },
         )
+        out?.surfaceSeqs.push(written.seq)
       } else {
-        session.append(
+        const written = session.append(
           'assistant/message',
           {
             turn,
@@ -991,6 +1017,7 @@ export function replayDialog(
           },
           { surfaceOp: 'append' },
         )
+        out?.surfaceSeqs.push(written.seq)
       }
       replayed += 1
     }
@@ -1001,7 +1028,8 @@ export function replayDialog(
     // front of `turn/end`: no reload accepts that pairing. Close the loop's own
     // step first so the turn this function opened is always well-formed.
     closeStep()
-    session.append('turn/end', { turn, reason: { kind: 'completed' } })
+    const closing = session.append('turn/end', { turn, reason: { kind: 'completed' } })
+    if (out !== undefined) out.toSeq = closing.seq
   }
   // The log now sits a turn ahead of the agent's memory. Move the counter in the
   // same breath, so the next real turn takes `turn + 1` rather than reusing the
@@ -1010,6 +1038,60 @@ export function replayDialog(
     advanceReplayedTurn(counter, turn)
   }
   return replayed
+}
+
+/**
+ * Cut ONE replayed turn back out of the surface, so undoing an EARLIER rewind
+ * does not leave the same dialogue published twice.
+ *
+ * A replayed turn is ordinary surface content (`user/message` +
+ * `assistant/message` inside a `turn/start … turn/end` frame), so the same
+ * `surfaceOp: { op: 'replace' }` a rewind uses removes it — the load validator
+ * then demands a flat, earlier, distinct `sourceEventSeqs` covering every
+ * shadowed surface node, which is exactly what {@link ReplaySpans.surfaceSeqs}
+ * is.
+ *
+ * Already-shadowed nodes are dropped from the citation instead of failing: a
+ * cut made by a later rewind may have taken some of them first, and the nodes
+ * that matter are the ones still visible. Returns `false` when nothing was left
+ * to cut (the caller then only records that the spans are spent).
+ */
+/**
+ * The log span a previous undo republished, read off its ledger entry. `null`
+ * when the undo replayed nothing (files-only undo) — there is nothing to cut.
+ */
+function replayedSpansOf(entry: HistoryEntry): ReplaySpans | undefined {
+  const surfaceSeqs = entry.replayedSurfaceSeqs
+  if (surfaceSeqs === undefined || surfaceSeqs.length === 0) return undefined
+  return {
+    fromSeq: entry.replayedFromSeq === undefined ? undefined : (entry.replayedFromSeq as SessionSeq),
+    toSeq: entry.replayedToSeq === undefined ? undefined : (entry.replayedToSeq as SessionSeq),
+    surfaceSeqs: [...surfaceSeqs] as SessionSeq[],
+  }
+}
+
+export function cutReplayedTurn(
+  session: Session,
+  spans: { readonly fromSeq?: number; readonly toSeq?: number; readonly surfaceSeqs: readonly number[] },
+): boolean {
+  if (spans.surfaceSeqs.length === 0) return false
+  const live = new Set<number>(session.surface.nodes)
+  const cited = spans.surfaceSeqs.filter(seq => live.has(seq)).sort((a, b) => a - b)
+  if (cited.length === 0) return false
+  // The replace range must be bounded by SURFACE nodes: `fromSeq` may be the
+  // replayed turn's `turn/start`, which is not itself on the surface and would
+  // make the append throw ("start seq not found in surface").
+  const startSeq = Math.min(...cited)
+  const endSeq = Math.max(...cited)
+  session.append('user/message', buildMarker(), {
+    surfaceOp: {
+      op: 'replace',
+      startSeq: startSeq as SessionSeq,
+      endSeq: endSeq as SessionSeq,
+    },
+    sourceEventSeqs: cited as SessionSeq[],
+  })
+  return true
 }
 
 /** Resolve a raw target token into a plan, mapping failures to messages. */
@@ -1024,7 +1106,7 @@ function resolveOrError(events: readonly SessionEvent[], surface: readonly numbe
 /** The file impact of a rewind target, served over the RPC channel. */
 interface PreviewImpact {
   readonly files: readonly FileImpact[]
-  /** Recorded paths whose current size is over the backup cap. */
+  /** Recorded paths that cannot be restored, each with its refusal reason. */
   readonly uncovered: readonly UncoveredPath[]
   /** New snapshots are disabled; the restore may be incomplete. */
   readonly backupOff: boolean
@@ -1078,32 +1160,6 @@ interface RewindRpcHost {
 const CORDIS_ISOLATE = Symbol.for('cordis.isolate')
 
 /**
- * `Symbol.for('cordis.root')`: the symbol slot under which every cordis context
- * exposes the application root context (`ctx[Context.root]`).
- */
-const CORDIS_ROOT = Symbol.for('cordis.root')
-
-/**
- * Read the application ROOT context out of any cordis context.
- *
- * cordis 4.2 moved the root from an inherited `ctx.root` property to the
- * symbol-keyed slot `ctx[Context.root]`, so the plain property read this plugin
- * used to make now yields `undefined` (and fails type checking). Reading the
- * registry key directly keeps the lookup independent of the exported binding,
- * exactly like {@link rawServiceOf} reads the isolation table.
- *
- * @param base - the context to read from.
- * @returns the root context, or undefined when the slot is absent.
- */
-export function rootContextOf(base: object): object | undefined {
-  const keyed = (base as unknown as Record<symbol, unknown>)[CORDIS_ROOT]
-  if (typeof keyed === 'object' && keyed !== null) return keyed
-  // Older cordis lines expose the root as an inherited plain property instead.
-  const legacy = (base as { readonly root?: unknown }).root
-  return typeof legacy === 'object' && legacy !== null ? legacy : undefined
-}
-
-/**
  * Read a service's RAW implementation out of a cordis context.
  *
  * A context proxy hands back a traced wrapper (so method calls see the caller's
@@ -1134,34 +1190,36 @@ export function rawServiceOf(base: object, name: string): unknown {
 
 /**
  * Re-derive a RAW service instance so that the lookups it performs INSIDE
- * `rpc.handle` resolve from the application root instead of the provider's own
- * context.
+ * `rpc.handle` resolve from a context that HAS the services they need, instead of
+ * from the provider's own context.
  *
  * Why this exists: `rpc.handle(channel, handler)` stores the channel through
- * `owner.effect(() => owner.webServer.register(route), ...)`, where `owner` is
- * the Connection service's own *define-site* context. `webServer` and
- * `connection` are provided by two DIFFERENT plugin fibres, so that read walks
- * the provider's fibre chain, dead-ends at the root fibre (`runtime === null`)
- * and throws `cannot get property "webServer" without inject` — the channel is
- * then never registered and every client query degrades to "host RPC is
- * unavailable" (Settings → Rewind history shows exactly that).
+ * `owner.effect(() => owner.get('webServer').register(route), ...)`, where `owner`
+ * is whichever context the Connection service is being read from. `webServer` and
+ * `connection` are provided by two DIFFERENT plugin fibres, so an owner that only
+ * has `connection` resolved finds no WebServer and registration throws — on cordis
+ * 4.0 as `cannot get property "webServer" without inject`, on 4.2 as
+ * `connection: RPC channels require a WebServer`. Either way the channel never
+ * exists and every client query degrades to "host RPC is unavailable" (Settings →
+ * Rewind history shows exactly that).
  *
- * A thin inheriting object with `ctx` redefined to the root keeps every method
- * and constructor field unchanged; only the define-site of the service's own
- * lookups moves, and the root context resolves `webServer` through its
- * unchecked path.
+ * A thin inheriting object with `ctx` redefined to an injected scope that has BOTH
+ * services keeps every method and constructor field unchanged; only the define-site
+ * of the service's own lookups moves, so the effect resolves the WebServer through
+ * that scope's injected services.
  *
  * @param raw - the raw service implementation (see {@link rawServiceOf}).
- * @param root - the application root context.
+ * @param owner - the context to re-base onto; it must have the services the
+ *   service reads inside `rpc.handle` resolved (the plugin's own injected scope).
  * @returns the re-based service, or undefined when the shape is not as expected
  *   (the caller then falls back to the plain service and reports the failure).
  */
-export function rebaseOnRoot<T extends object>(raw: T, root: object): T | undefined {
+export function rebaseOnOwner<T extends object>(raw: T, owner: object): T | undefined {
   if (typeof (raw as { readonly rpc?: { readonly handle?: unknown } }).rpc?.handle !== 'function') return undefined
   const bridge = Object.create(raw) as T
   // The service's own accessor reads `this.ctx`; redefine it here so the read
-  // lands on the root context rather than on the provider's fibre.
-  Object.defineProperty(bridge, 'ctx', { value: root, configurable: true, writable: true })
+  // lands on the owner context rather than on the provider's fibre.
+  Object.defineProperty(bridge, 'ctx', { value: owner, configurable: true, writable: true })
   return bridge
 }
 
@@ -1233,9 +1291,22 @@ export function createRewindRpcHandler(
         const host = historyOf()
         if (host === undefined) return { ok: true, value: { entries: [] } }
         const workspace = workspaceOf(session)
+        const entries = await host.store.list(workspace.key)
+        // `undoable` is the judgement made when the rewind finished; a newer
+        // restore retires that journal (retireUndoableJournals), so the ledger
+        // can promise an undo that is guaranteed to fail. Re-derive the flag
+        // from the journals that still exist, and remember why the button went
+        // away so the page can say it (§6.3: only the newest rewind is
+        // undoable — one rewind at a time, not one promise per row).
+        const live = await store.listUndoableOpIds(session.id)
+        const reconciled: HistoryEntryView[] = entries.map(entry => (
+          entry.undoable && entry.undoneAt === undefined && !live.has(entry.opId)
+            ? { ...entry, undoable: false, undoRecordGone: true }
+            : entry
+        ))
         return {
           ok: true,
-          value: { workspace, entries: await host.store.list(workspace.key) },
+          value: { workspace, entries: reconciled satisfies readonly HistoryEntryView[] },
         }
       }
       if (endpoint === 'history.clear') {
@@ -1245,8 +1316,13 @@ export function createRewindRpcHandler(
       }
       // Undo one completed rewind: restore the files AND republish the
       // dialogue the rewind shadowed (as new events — the log is append-only
-      // and the original nodes stay shadowed). At most once per entry, and
-      // only for the chain tail (§6.3).
+      // and the original nodes stay shadowed). At most once per entry.
+      //
+      // Any still-live rewind of this session may be undone, not just the
+      // newest one: rewinding further back first rolls the NEWER rewinds'
+      // files back (they describe the state this undo is leaving) and cuts
+      // whatever dialogue their own undos republished into the log, so the
+      // target dialogue is republished exactly once.
       if (endpoint === 'undo') {
         const host = historyOf()
         if (host === undefined) return rpcFailure('rewind/not-undoable', 'history is unavailable')
@@ -1266,15 +1342,14 @@ export function createRewindRpcHandler(
         const entry = entries.find(candidate => candidate.opId === opId)
         if (entry === undefined) return rpcFailure('rewind/unknown-entry', `history entry ${opId} is not in this workspace`)
         if (entry.workspaceKey !== workspace.key) return rpcFailure('rewind/undo-cross-workspace', 'entry belongs to another workspace')
-        // The page only offers the active session's chain tail; refuse another
-        // session's entry at the channel too, so a hand-made call cannot undo a
-        // rewind the user is not looking at.
         if (entry.sessionId !== session.id) return rpcFailure('rewind/undo-other-session', 'entry belongs to another session')
         if (entry.undoneAt !== undefined) return rpcFailure('rewind/already-undone', 'this rewind was already restored once')
         if (!entry.undoable) return rpcFailure('rewind/not-undoable', 'the snapshot for this rewind is gone')
-        if (!HistoryStore.isChainTail(entries, entry)) {
-          return rpcFailure('rewind/undo-not-top', 'restore the newer rewind first')
-        }
+        // Newer rewinds of the same session sit between the disk and this
+        // target: they are rolled back first, newest to oldest.
+        const newer = entries
+          .filter((candidate) => candidate.sessionId === session.id && candidate.at > entry.at)
+          .sort((a, b) => b.at - a.at)
         try {
           // Undo restores the FILE half, then brings the withdrawn dialogue
           // back as one new turn at the end of the log (`replayDialog`).
@@ -1301,6 +1376,85 @@ export function createRewindRpcHandler(
           if (dialog.length > 0 && turnIsOpen(session)) {
             return rpcFailure('rewind/undo-busy', 'wait for the current turn to finish before restoring the dialogue')
           }
+
+          // ---- 1. Cut replays left behind by NEWER rewinds already undone ----
+          // Those undos republished their dialogue at the end of the log. This
+          // undo will publish the target dialogue, which contains that text
+          // again, so the earlier replay is cut out first. Idempotent: a spans
+          // record is spent once `replayCutAt` is stamped.
+          const cutFailed: { path: string; message: string }[] = []
+          for (const candidate of newer) {
+            if (candidate.undoneAt === undefined) continue
+            if (candidate.replayCutAt !== undefined) continue
+            const spans = replayedSpansOf(candidate)
+            if (spans === undefined || spans.surfaceSeqs.length === 0) continue
+            try {
+              cutReplayedTurn(session, spans)
+              await host.store.patch(workspace.key, candidate.opId, { replayCutAt: Date.now() })
+            } catch (error) {
+              // Never fatal: the file half is what the user asked for, and the
+              // duplicate dialogue is reported as a partial result.
+              cutFailed.push({
+                path: `<replay ${candidate.opId}>`,
+                message: error instanceof Error ? error.message : String(error),
+              })
+            }
+          }
+
+          // ---- 2. Roll the NEWER undos' files back, newest first ----
+          // Their journals describe states the target's undo must pass through:
+          // skipping one leaves the worktree at that state while the target's
+          // rescue copy overwrites only its own paths.
+          const cascaded: string[] = []
+          const cascadeFailed: { path: string; message: string }[] = []
+          for (const candidate of newer) {
+            if (candidate.undoneAt !== undefined) continue
+            try {
+              const rolled = await store.undoRestore(candidate.sessionId, candidate.opId, path => unlink(path))
+              if (rolled.failed.length > 0) {
+                cascadeFailed.push(...rolled.failed.map(item => ({
+                  path: item.path,
+                  message: `[cascade ${candidate.opId}] ${item.message}`,
+                })))
+                break
+              }
+              if (settle !== undefined) await settle({ session }, rolled).catch(() => undefined)
+              await host.store.patch(workspace.key, candidate.opId, {
+                undoneAt: Date.now(),
+                undoOutcome: 'success',
+                // Their dialogue is covered by the target's replay, so it is
+                // never republished separately.
+                undoMode: 'files',
+                cascadedBy: opId,
+              })
+              cascaded.push(candidate.opId)
+            } catch (error) {
+              cascadeFailed.push({
+                path: `<cascade ${candidate.opId}>`,
+                message: error instanceof Error ? error.message : String(error),
+              })
+              break
+            }
+          }
+          // A partially applied cascade is still retryable (the entries it
+          // stamped are skipped next time), but undoing the target now would
+          // restore ITS files over a worktree that never reached the target
+          // state. Report and stop.
+          if (cascadeFailed.length > 0) {
+            return {
+              ok: true,
+              value: {
+                kind: 'partial',
+                restored: 0,
+                deleted: 0,
+                replayed: 0,
+                cascaded: cascaded.length,
+                failed: [...cutFailed, ...cascadeFailed],
+              },
+            }
+          }
+
+          // ---- 3. Undo the target, then replay its dialogue once ----
           const outcome = await store.undoRestore(entry.sessionId, opId, path => unlink(path))
           // The undo rewrites the worktree exactly like a rewind, so it must run
           // the same settle step: without it the session's NEXT write of a
@@ -1314,9 +1468,10 @@ export function createRewindRpcHandler(
           // turn on the retry.
           let replayed = 0
           let replayError: unknown
+          const spans: ReplaySpans = { surfaceSeqs: [] }
           if (outcome.failed.length === 0 && dialog.length > 0) {
             try {
-              replayed = replayDialog(session, dialog, agent)
+              replayed = replayDialog(session, dialog, agent, spans)
             } catch (error) {
               replayError = error
             }
@@ -1330,13 +1485,23 @@ export function createRewindRpcHandler(
               undoneAt: Date.now(),
               undoOutcome: replayError === undefined ? 'success' : 'partial',
               undoMode: replayed > 0 ? 'files+refill' : 'files',
+              // Remember where the replay landed: undoing a STILL-EARLIER
+              // rewind cuts these seqs back out so the text is not published
+              // twice.
+              ...(replayed > 0
+                ? {
+                    replayedFromSeq: spans.fromSeq,
+                    replayedToSeq: spans.toSeq,
+                    replayedSurfaceSeqs: [...spans.surfaceSeqs],
+                  }
+                : {}),
             })
           }
           // The conversation half is reported as a failed path so the page
           // says "files restored, dialogue not" instead of claiming success.
           const failed = replayError === undefined
-            ? outcome.failed
-            : [...outcome.failed, {
+            ? [...outcome.failed, ...cutFailed]
+            : [...outcome.failed, ...cutFailed, {
                 path: '<conversation>',
                 message: replayError instanceof Error ? replayError.message : String(replayError),
               }]
@@ -1347,6 +1512,9 @@ export function createRewindRpcHandler(
               restored: outcome.restored.length,
               deleted: outcome.deleted.length,
               replayed,
+              // How many newer rewinds this undo had to roll back first (so the
+              // page can say "and N later rewinds were rolled back").
+              cascaded: cascaded.length,
               failed,
             },
           }
@@ -1406,17 +1574,31 @@ function renderFailures(failed: readonly { path: string; message: string }[]): s
 }
 
 /**
- * One "not restored" line per skipped path the cap caused: a path that is both
- * in the uncovered set (current size over the cap) and skipped by this pass is
- * exactly the cap refusal. Other skips stay summarised by `skip.count`.
+ * One "not restored" line per skipped path the capture layer left out. Two
+ * different refusals land here and must not be described as one:
+ *
+ * - the live size is over the per-file cap, so the recorded state predates
+ *   untracked edits;
+ * - the capture policy never backs that kind of file up at all (binary/media
+ *   extensions, excluded directories, user globs, NUL-sniffed content).
+ *
+ * Reporting the second as "over the limit" is what made a 91 kB screenshot
+ * claim it had exceeded an 8 MB cap. Other skips stay summarised by
+ * `skip.count`.
  */
 function renderSkipped(outcome: RestoreOutcome, uncovered: readonly UncoveredPath[], maxFileBytes: number): string {
-  const capped = new Set(uncovered.map(item => item.path))
+  const byPath = new Map(uncovered.map(item => [item.path, item]))
   const limit = formatBytes(maxFileBytes)
-  return outcome.skipped
-    .filter(path => capped.has(path))
-    .map(path => t('plan.skip', { path, reason: t('skipReason.oversized', { limit }) }))
-    .join('\n')
+  const lines: string[] = []
+  for (const path of outcome.skipped) {
+    const item = byPath.get(path)
+    if (item === undefined) continue
+    const reason = item.reason === 'excluded'
+      ? t('skipReason.excluded', {})
+      : t('skipReason.oversized', { limit })
+    lines.push(t('plan.skip', { path, reason }))
+  }
+  return lines.join('\n')
 }
 
 /**
@@ -2663,19 +2845,26 @@ export function apply(ctx: Context, config?: Config): void {
     })()
   }, { global: true })
 
-  // `rpc.handle` registers its route inside an effect that reads `owner.webServer`,
-  // where `owner` is the CONNECTION service's own define-site context. `webServer`
-  // and `connection` live in different plugin fibres, so that read dead-ends at the
-  // root fibre and throws `cannot get property "webServer" without inject` — the
-  // channel then never exists and every client query reports "host RPC unavailable".
-  // `rebaseOnRoot` moves only that define-site to the root context; see its doc.
-  ctx.inject(['connection'], (scope) => {
+  // `rpc.handle` registers its route inside `owner.effect(() => owner.get('webServer')
+  // ...register(route))`, where `owner` is whichever context the CONNECTION service
+  // is being read from. `webServer` and `connection` are provided by two DIFFERENT
+  // plugin fibres, so an owner that only has `connection` in scope resolves no
+  // WebServer and registration throws — verified both ways on real hosts:
+  //   - cordis 4.0: `cannot get property "webServer" without inject`
+  //   - cordis 4.2: `connection: RPC channels require a WebServer`
+  // In BOTH cases the channel never exists and every client query reports
+  // "host RPC unavailable" (Settings → Rewind history shows exactly that).
+  //
+  // The owner therefore has to be a context that has BOTH services resolved: this
+  // injected scope. `rebaseOnOwner` then points the service's own `this.ctx` at it,
+  // so the lookup inside the effect resolves through the scope's injected services
+  // instead of the provider's fibre chain.
+  ctx.inject(['connection', 'webServer'], (scope) => {
     try {
       const proxied = scope.get('connection') as RewindRpcHost | undefined
       if (proxied === undefined) return
       const raw = rawServiceOf(scope, 'connection') as RewindRpcHost | undefined
-      const root = rootContextOf(scope)
-      const host = raw === undefined || root === undefined ? undefined : rebaseOnRoot(raw, root)
+      const host = raw === undefined ? undefined : rebaseOnOwner(raw, scope)
       const dispose = (host ?? proxied).rpc.handle(
         REWIND_RPC_CHANNEL,
         createRewindRpcHandler(

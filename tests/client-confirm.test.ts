@@ -79,7 +79,7 @@ afterEach(() => {
 })
 
 describe('openConfirm (single stage)', () => {
-  it('renders exactly one confirm and one cancel, with the irreversible note', async () => {
+  it('renders exactly one confirm and one cancel, with the after-rewind note', async () => {
     open()
     await settle()
     const buttons = actionButtons()
@@ -87,7 +87,7 @@ describe('openConfirm (single stage)', () => {
     expect(buttons[0]?.textContent).toBe('popover.cancel')
     expect(buttons[1]?.textContent).toBe('popover.confirm')
     // The fixed sentence every dialog carries must be present verbatim.
-    expect(document.body.textContent).toContain('confirm.irreversible')
+    expect(document.body.textContent).toContain('confirm.afterRewind')
   })
 
   it('starts focus on cancel so Enter cannot confirm by accident', async () => {
@@ -135,6 +135,36 @@ describe('openConfirm (impact list)', () => {
     open(async () => ({ kind: 'success', files: [{ path: '/a', action: 'restore' }], backupOff: true }))
     await settle()
     expect(document.body.textContent).toContain('popover.backupDisabled')
+  })
+
+  it('names a capture-policy refusal instead of claiming the size cap', async () => {
+    // A 91 kB screenshot was reported as "over the 8 MB backup limit": the host
+    // marks policy exclusions with `reason: 'excluded'`, and the dialog must
+    // read them as a different promise than a real size-cap refusal.
+    open(async () => ({
+      kind: 'success',
+      files: [{ path: '/ws/notes.md', action: 'restore' }],
+      backupOff: false,
+      uncovered: [
+        { path: '/ws/assets/a.png', reason: 'excluded', exclusion: 'excluded-extension' },
+        { path: '/ws/huge.bin', size: 9_000_000 },
+      ],
+    }))
+    await settle()
+    expect(impactText()).toContain('popover.impact.excluded:')
+    expect(impactText()).toContain('popover.impact.uncovered:')
+  })
+
+  it('never mentions the size cap when every uncovered path was policy-excluded', async () => {
+    open(async () => ({
+      kind: 'success',
+      files: [],
+      backupOff: false,
+      uncovered: [{ path: '/ws/assets/a.png', reason: 'excluded', exclusion: 'excluded-extension' }],
+    }))
+    await settle()
+    expect(impactText()).toContain('popover.impact.excluded:')
+    expect(impactText()).not.toContain('popover.impact.uncovered')
   })
 })
 

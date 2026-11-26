@@ -34,6 +34,7 @@
 export const en = {
   'plan.skip': '  not restored: {path} ({reason})',
   'skipReason.oversized': 'over the {limit} backup limit, so the recorded state predates untracked edits',
+  'skipReason.excluded': 'never backed up (binary or media file, or an excluded path), so the rewind cannot restore it',
   'error.invalidTarget': 'Cannot parse target "{raw}" (expected <index> or @<seq>)',
   'error.replayAgentOutOfSync': 'The live agent did not expose an idle turn counter, so the withdrawn dialogue was not republished (files were restored). Reload the session, then undo again.',
   'error.replayCompactionOpen': 'The session is in the middle of a compaction, so the withdrawn dialogue was not republished (files were restored). Wait for the compaction to finish, then undo again.',
@@ -96,6 +97,7 @@ export type HostKey = keyof typeof en
 export const zh: Record<HostKey, string> = {
   'plan.skip': '  未还原：{path}（{reason}）',
   'skipReason.oversized': '已超过 {limit} 的备份上限，记录的状态早于未被跟踪的修改',
+  'skipReason.excluded': '按备份策略从不备份（二进制文件、媒体文件或被排除的路径），本次无法还原',
   'error.invalidTarget': '无法解析目标 "{raw}"（应为 <序号> 或 @<seq>）',
   'error.replayAgentOutOfSync': '当前会话没有暴露可用的空闲回合计数器，撤销没有回填对话（文件已恢复）。请重新加载会话后再撤销一次。',
   'error.replayCompactionOpen': '当前会话正在压缩中，撤销没有回填对话（文件已恢复）。请等压缩完成后再撤销一次。',
@@ -154,6 +156,7 @@ export const zh: Record<HostKey, string> = {
 export const ja: Record<HostKey, string> = {
   'plan.skip': '  復元対象外：{path}（{reason}）',
   'skipReason.oversized': '{limit} のバックアップ上限を超えているため、記録された状態は未追跡の編集より前のものです',
+  'skipReason.excluded': 'バックアップ対象外のファイル（バイナリ・メディア、または除外パス）のため復元できません',
   'error.invalidTarget': '対象 "{raw}" を解析できません（<index> または @<seq> を指定してください）',
   'error.replayAgentOutOfSync': 'このセッションは利用可能なターンカウンターを公開していないため、会話は復元されませんでした（ファイルは復元済み）。セッションを再読み込みしてから、もう一度取り消してください。',
   'error.replayCompactionOpen': 'このセッションは圧縮の途中のため、会話は復元されませんでした（ファイルは復元済み）。圧縮の完了を待ってから、もう一度取り消してください。',
@@ -213,6 +216,7 @@ export const ja: Record<HostKey, string> = {
 export const es: Record<HostKey, string> = {
   'plan.skip': '  no restaurado: {path} ({reason})',
   'skipReason.oversized': 'supera el límite de copias de seguridad de {limit}, por lo que el estado registrado es anterior a los cambios no rastreados',
+  'skipReason.excluded': 'nunca se respalda (archivo binario o multimedia, o ruta excluida), así que la reversión no puede restaurarlo',
   'error.invalidTarget': 'No se puede interpretar el destino "{raw}" (se esperaba <index> o @<seq>)',
   'error.replayAgentOutOfSync': 'La sesión no expone un contador de turnos inactivo utilizable, así que el diálogo no se republicó (los archivos sí se restauraron). Recarga la sesión y vuelve a deshacer.',
   'error.replayCompactionOpen': 'La sesión está en mitad de una compactación, así que el diálogo no se republicó (los archivos sí se restauraron). Espera a que termine la compactación y vuelve a deshacer.',
@@ -272,6 +276,7 @@ export const es: Record<HostKey, string> = {
 export const fr: Record<HostKey, string> = {
   'plan.skip': '  non restauré : {path} ({reason})',
   'skipReason.oversized': 'dépasse la limite de {limit} sauvegardes : l’état enregistré précède les modifications non suivies',
+  'skipReason.excluded': 'n’est jamais sauvegardé (fichier binaire ou média, ou chemin exclu) : le retour ne peut pas le restaurer',
   'error.invalidTarget': 'Impossible d’analyser la cible « {raw} » (attendu : <index> ou @<seq>)',
   'error.replayAgentOutOfSync': 'La session n’expose pas de compteur de tours inactif exploitable : le dialogue n’a pas été republié (les fichiers, eux, ont été restaurés). Rechargez la session puis recommencez l’annulation.',
   'error.replayCompactionOpen': 'La session est en cours de compactage : le dialogue n’a pas été republié (les fichiers, eux, ont été restaurés). Attendez la fin du compactage puis recommencez l’annulation.',
@@ -331,6 +336,7 @@ export const fr: Record<HostKey, string> = {
 export const de: Record<HostKey, string> = {
   'plan.skip': '  nicht wiederhergestellt: {path} ({reason})',
   'skipReason.oversized': 'über dem Sicherungslimit von {limit}, daher stammt der aufgezeichnete Stand von vor nicht erfassten Änderungen',
+  'skipReason.excluded': 'wird nie gesichert (Binär- oder Mediendatei bzw. ausgeschlossener Pfad), daher nicht wiederherstellbar',
   'error.invalidTarget': 'Ziel "{raw}" kann nicht verarbeitet werden (erwartet: <index> oder @<seq>)',
   'error.replayAgentOutOfSync': 'Die Sitzung stellt keinen nutzbaren Ruhe-Turnzähler bereit, daher wurde der Dialog nicht erneut veröffentlicht (die Dateien wurden wiederhergestellt). Lade die Sitzung neu und mache die Rücknahme erneut.',
   'error.replayCompactionOpen': 'Die Sitzung befindet sich mitten in einer Kompaktierung, daher wurde der Dialog nicht erneut veröffentlicht (die Dateien wurden wiederhergestellt). Warte, bis die Kompaktierung abgeschlossen ist, und mache die Rücknahme erneut.',
@@ -390,6 +396,7 @@ export const de: Record<HostKey, string> = {
 export const ru: Record<HostKey, string> = {
   'plan.skip': '  не восстановлено: {path} ({reason})',
   'skipReason.oversized': 'превышен предел резервных копий {limit}, поэтому записанное состояние предшествует неотслеживаемым изменениям',
+  'skipReason.excluded': 'никогда не сохраняется (двоичный или медиафайл либо исключённый путь), поэтому восстановить нельзя',
   'error.invalidTarget': 'Не удалось разобрать цель "{raw}" (ожидается <index> или @<seq>)',
   'error.replayAgentOutOfSync': 'Сессия не предоставляет пригодный счётчик ходов в состоянии простоя, поэтому диалог не был восстановлен (файлы восстановлены). Перезагрузите сессию и повторите отмену.',
   'error.replayCompactionOpen': 'Сессия находится в процессе сжатия, поэтому диалог не был восстановлен (файлы восстановлены). Дождитесь завершения сжатия и повторите отмену.',
@@ -449,6 +456,7 @@ export const ru: Record<HostKey, string> = {
 export const pt: Record<HostKey, string> = {
   'plan.skip': '  não restaurado: {path} ({reason})',
   'skipReason.oversized': 'acima do limite de {limit} backups, então o estado registrado é anterior a alterações não rastreadas',
+  'skipReason.excluded': 'nunca é salvo (arquivo binário ou de mídia, ou caminho excluído), então não pode ser restaurado',
   'error.invalidTarget': 'Não foi possível interpretar o destino "{raw}" (esperado <index> ou @<seq>)',
   'error.replayAgentOutOfSync': 'A sessão não expõe um contador de turnos ocioso utilizável, então o diálogo não foi republicado (os arquivos foram restaurados). Recarregue a sessão e desfaça novamente.',
   'error.replayCompactionOpen': 'A sessão está no meio de uma compactação, então o diálogo não foi republicado (os arquivos foram restaurados). Aguarde a compactação terminar e desfaça novamente.',

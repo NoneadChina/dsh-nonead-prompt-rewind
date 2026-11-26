@@ -22,13 +22,19 @@ export interface PreviewFileImpact {
 }
 
 /**
- * A recorded path whose CURRENT size is over the backup cap: no backup of that
- * state exists, so a rewind cannot restore it. The host reports these
- * separately from `files` for exactly that reason.
+ * A recorded path that a rewind CANNOT restore, and why: either its CURRENT
+ * size is over the backup cap, or the capture policy never backs that kind of
+ * file up (binary/media extensions, excluded directories, user globs, NUL
+ * content). The host reports these separately from `files` so the dialog never
+ * implies a restore that will not happen.
  */
 export interface PreviewUncoveredPath {
   readonly path: string
   readonly size?: number
+  /** Present when the capture policy (not the size cap) left the path out. */
+  readonly reason?: 'excluded'
+  /** The specific policy exclusion, for diagnostics. */
+  readonly exclusion?: string
 }
 
 /** One impact probe resolved, failed, or timed out (`null`). */
@@ -175,6 +181,13 @@ export interface HistoryEntryView {
   readonly errorText?: string
   readonly chainPrev?: string
   readonly undoable: boolean
+  /**
+   * `true` when this rewind was undoable at rewind time but the journal an undo
+   * addresses is gone (a newer rewind retired it). The host sends `undoable:
+   * false` alongside it; the page explains the missing button instead of
+   * offering one that can only fail.
+   */
+  readonly undoRecordGone?: boolean
   /** Relative path of the folded-away conversation archive, when one exists. */
   readonly archivePath?: string
   readonly undoneAt?: number

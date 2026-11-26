@@ -310,25 +310,42 @@ function confirmKeyHandler(root: HTMLElement, confirm: HTMLButtonElement, onConf
   }
 }
 
-/** The fixed, non-negotiable sentence every dialog carries. */
-function irreversibleNote(t: Translate): HTMLElement {
-  return el('div', CLASS.popoverNote, t('confirm.irreversible'))
+/**
+ * The fixed sentence every dialog carries. It must NOT claim the rewind is
+ * irreversible: the text half is cut, but the plugin's settings history can
+ * undo one rewind, which restores the files AND reposts the withdrawn
+ * dialogue as a new turn (see the `undo` endpoint in `src/index.ts`).
+ * Claiming "the conversation cannot be recovered" contradicted that undo path.
+ */
+function afterRewindNote(t: Translate): HTMLElement {
+  return el('div', CLASS.popoverNote, t('confirm.afterRewind'))
 }
 
 /** Paths shown per uncovered line before `+N` takes over. */
 const MAX_UNCOVERED_PATHS = 8
 
-/**
- * One line naming recorded paths that a rewind CANNOT restore because their
- * live size is over the backup cap. Without it the dialog would claim there is
- * nothing to restore while silently leaving those files alone.
- */
-function uncoveredLine(paths: readonly PreviewUncoveredPath[], t: Translate): string {
+/** One `path, path +N` list for a single uncovered line. */
+function pathList(paths: readonly PreviewUncoveredPath[]): string {
   const shown = paths.slice(0, MAX_UNCOVERED_PATHS).map(file => file.path)
   const hidden = paths.length - shown.length
-  return t('popover.impact.uncovered', {
-    paths: `${shown.join(', ')}${hidden > 0 ? ` +${hidden}` : ''}`,
-  })
+  return `${shown.join(', ')}${hidden > 0 ? ` +${hidden}` : ''}`
+}
+
+/**
+ * One line per REASON recorded paths cannot be restored. The two refusals are
+ * different promises and must read differently: "over the backup size limit"
+ * (a 91 kB screenshot never exceeded an 8 MB cap) and "this kind of file is
+ * never backed up" (binary/media extensions, excluded dirs or globs, NUL
+ * content). Without this split the dialog claimed a size violation for files
+ * that were simply out of scope.
+ */
+function uncoveredLines(paths: readonly PreviewUncoveredPath[], t: Translate): string[] {
+  const capped = paths.filter(file => file.reason !== 'excluded')
+  const excluded = paths.filter(file => file.reason === 'excluded')
+  const lines: string[] = []
+  if (capped.length > 0) lines.push(t('popover.impact.uncovered', { paths: pathList(capped) }))
+  if (excluded.length > 0) lines.push(t('popover.impact.excluded', { paths: pathList(excluded) }))
+  return lines
 }
 
 /**
@@ -360,10 +377,11 @@ function renderImpact(impact: HTMLElement, outcome: PreviewOutcome, t: Translate
   }
   if (restores.length === 0 && deletes.length === 0) {
     // No planned action is NOT the same as "nothing to restore": a recorded
-    // path over the backup cap has no restorable state at all.
-    impact.textContent = uncovered.length === 0
+    // path the capture layer left out has no restorable state at all.
+    const uncoveredText = uncoveredLines(uncovered, t)
+    impact.textContent = uncoveredText.length === 0
       ? t('popover.impact.none')
-      : uncoveredLine(uncovered, t)
+      : uncoveredText.join('\n')
     return
   }
   const lines = [
@@ -374,7 +392,9 @@ function renderImpact(impact: HTMLElement, outcome: PreviewOutcome, t: Translate
   impact.textContent = hidden > 0 ? `${lines.join('\n')}\n+${hidden}` : lines.join('\n')
   const notes: HTMLElement[] = []
   if (hidden > 0) notes.push(el('div', CLASS.popoverNote, t('confirm.truncated', { count: hidden })))
-  if (uncovered.length > 0) notes.push(el('div', CLASS.popoverNote, uncoveredLine(uncovered, t)))
+  if (uncovered.length > 0) {
+    for (const line of uncoveredLines(uncovered, t)) notes.push(el('div', CLASS.popoverNote, line))
+  }
   if (outcome.backupOff) notes.push(el('div', CLASS.popoverNote, t('popover.backupDisabled')))
   for (const note of notes) impact.append(note)
 }
@@ -425,7 +445,7 @@ export function openConfirm(opts: ConfirmOptions): void {
     el('div', CLASS.popoverTitle, t('popover.title')),
     el('div', CLASS.popoverTarget, preview.length > 0 ? preview : t('popover.noText')),
     impact,
-    irreversibleNote(t),
+    afterRewindNote(t),
     actions,
   )
 

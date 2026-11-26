@@ -112,6 +112,18 @@ export const DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024
 export const MAX_ANCHOR_GROUPS = 100
 
 /**
+ * Number of newest `completed` restore journals kept per session.
+ *
+ * Each one is an undo record ("restore this rewind"), and undo used to be
+ * limited to the single newest (§6.3): a new restore retired the previous
+ * journal, so "rewind A, rewind B, undo B, undo A" failed at the last step
+ * with `rewind/undo-unavailable`. Keeping a bounded stack lets the user unwind
+ * further back; the cap bounds the rescue bytes the journals pin, and the
+ * oldest record is the only one a new restore retires.
+ */
+export const MAX_UNDOABLE_JOURNALS = 10
+
+/**
  * Default retention horizon for anchor groups. A group older than this many
  * days is evicted even when the session is far below {@link MAX_ANCHOR_GROUPS}:
  * a rewind target that old degrades to a conversation-only rewind, which keeps
@@ -2529,10 +2541,10 @@ export class SnapshotStore {
     callerOpId?: string,
     dialog?: readonly RestoreDialogItem[],
   ): Promise<RestoreJournal> {
-    // A new restore replaces the old undo target: retire the previous
-    // `completed` journal (the only one that may be undoable) and recycle any
-    // finished rollback records before persisting the new intent. This is also
-    // what bounds journal accumulation: at most one completed journal exists.
+    // A new restore no longer replaces the whole undo stack: it retires only
+    // the OLDEST `completed` journals beyond {@link MAX_UNDOABLE_JOURNALS},
+    // so older rewinds stay undoable. Finished rollback records are recycled
+    // first, which is what bounds journal accumulation on the terminal side.
     const sessionDir = this.sessionDir(sessionId)
     try {
       const names = await readdir(sessionDir)
@@ -2650,6 +2662,40 @@ export class SnapshotStore {
     } catch {
       return undefined
     }
+  }
+
+  /**
+   * Op ids of a session's journals that are still `completed` — i.e. the rewinds
+   * an undo can actually address right now.
+   *
+   * The history ledger records `undoable` at rewind time and is never rewritten
+   * when a restore retires that journal ({@link retireUndoableJournals}), so the
+   * ledger alone can promise an undo that is guaranteed to fail. The settings
+   * page reads this set to mark those rows instead of offering a dead button.
+   *
+   * Corrupt journals are left out — the undo path reports corruption loudly on
+   * its own, and claiming "undoable" from an unreadable record would be a guess.
+   */
+  async listUndoableOpIds(sessionId: string): Promise<Set<string>> {
+    const ids = new Set<string>()
+    const sessionDir = this.sessionDir(sessionId)
+    let names: string[]
+    try {
+      names = await readdir(sessionDir)
+    } catch (error) {
+      if (isEnoent(error)) return ids
+      throw error
+    }
+    for (const name of names) {
+      if (!isJournalName(name)) continue
+      try {
+        const parsed = JSON.parse(await readFile(join(sessionDir, name), 'utf8')) as Partial<RestoreJournal>
+        if (parsed.state === 'completed') ids.add(journalOpIdOf(name))
+      } catch {
+        // Corrupt or unreadable: not undoable (the undo path says so itself).
+      }
+    }
+    return ids
   }
 
   /**
@@ -3424,13 +3470,12 @@ export class SnapshotStore {
 
   /**
    * Recycle FINISHED restore journals (`rolled-back`). A `completed` journal is
-   * NOT garbage: it is the undo record the user's "undo this rewind" acts on,
-   * so it lives until a newer restore supersedes it (see
-   * {@link retireUndoableJournals}) or the session is cleared. Keeping exactly
-   * one is what bounds the accumulation — not treating it as terminal waste.
-   * Non-terminal journals (crashed ops awaiting reconcile / continue /
-   * rollback) and unclassifiable (corrupt) ones are ALWAYS kept — a recovery
-   * record that cannot be classified is never destroyed.
+   * NOT garbage: it is one of the undo records the user's "undo this rewind"
+   * acts on, so it lives until a newer restore pushes the stack past
+   * {@link MAX_UNDOABLE_JOURNALS} (see {@link retireUndoableJournals}) or the
+   * session is cleared. Non-terminal journals (crashed ops awaiting reconcile /
+   * continue / rollback) and unclassifiable (corrupt) ones are ALWAYS kept — a
+   * recovery record that cannot be classified is never destroyed.
    */
   private async pruneTerminalJournals(sessionDir: string, names: readonly string[]): Promise<void> {
     for (const name of names) {
@@ -3451,27 +3496,54 @@ export class SnapshotStore {
   }
 
   /**
-   * Retire a still-undoable `completed` journal because a NEW restore is about
-   * to start. Only the newest rewind is undoable (§6.3), so the older journal
-   * and its rescue bytes are genuinely superseded here — this is the one place
-   * where a completed journal may be deleted. The deletion must happen BEFORE
-   * the new journal is written: if it crashed in between, the workspace would
-   * still be at the new target with no journal for either op, which is the
-   * honest "not undoable" state rather than a journal pointing at a target the
-   * rewind has already replaced.
+   * Retire the OLDEST undoable `completed` journals because a NEW restore is
+   * about to start, keeping at most {@link MAX_UNDOABLE_JOURNALS} of them
+   * (including the one this restore is about to write).
+   *
+   * Undo used to be limited to the newest rewind (§6.3): a new restore retired
+   * the single previous `completed` journal, which made "rewind A, rewind B,
+   * undo B, undo A" fail at the last step. A bounded stack of journals keeps
+   * the older rewinds undoable; the cap is what bounds the rescue bytes they
+   * pin, and the oldest record is still the first to go.
+   *
+   * The deletion must happen BEFORE the new journal is written: if it crashed
+   * in between, the workspace would still be at the new target with no journal
+   * for the retired op, which is the honest "not undoable" state rather than a
+   * journal pointing at a target the rewind has already replaced.
+   *
+   * A record that cannot be parsed is NEVER deleted: it might be a completed
+   * journal carrying the only copy of a rescue.
    */
-  private async retireUndoableJournals(sessionDir: string, names: readonly string[]): Promise<void> {
+  private async retireUndoableJournals(
+    sessionDir: string,
+    names: readonly string[],
+    keep: number = MAX_UNDOABLE_JOURNALS,
+  ): Promise<void> {
+    // The new journal is not written yet, so this restore may keep one fewer.
+    const allowed = Math.max(0, keep - 1)
+    const completed: { file: string; name: string; startedAt: number }[] = []
     for (const name of names) {
       if (!isJournalName(name)) continue
       const file = join(sessionDir, name)
       try {
         const parsed = JSON.parse(await readFile(file, 'utf8')) as Partial<RestoreJournal>
         if (parsed.state !== 'completed') continue
-        await rm(file, { force: true })
-        await rm(join(sessionDir, RESCUE_DIR, safeFileId(journalOpIdOf(name))), { recursive: true, force: true })
+        completed.push({
+          file,
+          name,
+          startedAt: typeof parsed.startedAt === 'number' ? parsed.startedAt : 0,
+        })
       } catch {
         // Unreadable: keep it — never delete a record we cannot classify.
       }
+    }
+    if (completed.length <= allowed) return
+    // Newest first. The name breaks ties so two records written in the same
+    // millisecond are ordered deterministically (their opIds are time-prefixed).
+    completed.sort((a, b) => b.startedAt - a.startedAt || b.name.localeCompare(a.name))
+    for (const doomed of completed.slice(allowed)) {
+      await rm(doomed.file, { force: true })
+      await rm(join(sessionDir, RESCUE_DIR, safeFileId(journalOpIdOf(doomed.name))), { recursive: true, force: true })
     }
   }
 
