@@ -91,6 +91,18 @@ describe('SettingsSection (history page)', () => {
     expect(container.textContent).toContain('settings.history.empty')
   })
 
+  it('shows the build identity beside the heading', async () => {
+    const container = await mount({})
+    const badge = container.querySelector('.dsh-rewind-history-version')
+    expect(badge).not.toBeNull()
+    // The test runner has no esbuild `define`, so the fallback is 'dev'; what
+    // matters is that SOMETHING is rendered from the build constants.
+    expect(badge?.textContent).toBe('dev')
+    expect(badge?.getAttribute('title')).toBe('dev')
+    // It sits in the heading row, not in the actions cluster.
+    expect(badge?.closest('.dsh-rewind-history-title')).not.toBeNull()
+  })
+
   it('renders one row per entry, newest first', async () => {
     const container = await mount({
       loadHistory: async () => ({
@@ -219,8 +231,11 @@ describe('SettingsSection (history page)', () => {
     })
     const undoButtons = [...container.querySelectorAll('button')]
       .filter(button => button.textContent === 'settings.history.undo')
-    // Both rows can be undone; undoing the older one cascades the newer back.
+    // Only the newest live rewind is undoable: the older row keeps a dead button
+    // instead of disappearing, so "never undoable" and "undo the newer one
+    // first" stay distinguishable.
     expect(undoButtons).toHaveLength(2)
+    expect(undoButtons.filter(button => !(button as HTMLButtonElement).disabled)).toHaveLength(1)
     const rows = undoButtons.map(button => button.closest('li')?.textContent ?? '')
     expect(rows.some(text => text.includes('@3'))).toBe(true)
     expect(rows.some(text => text.includes('@7'))).toBe(true)
@@ -259,8 +274,10 @@ describe('SettingsSection (history page)', () => {
     expect(loadHistory).toHaveBeenCalledTimes(1)
   })
 
-  it('warns that an older row rolls newer rewinds back first', async () => {
+  it('disables an older row until the newer one is undone', async () => {
+    const undoHistory = vi.fn(async () => ({ kind: 'ok', restored: 1, deleted: 0 }) as const)
     const container = await mount({
+      undoHistory,
       loadHistory: async () => ({
         workspace: { key: 'ws-w1' },
         entries: [
@@ -272,13 +289,21 @@ describe('SettingsSection (history page)', () => {
     const rows = [...container.querySelectorAll('.dsh-rewind-history-row')]
     const older = rows.find(row => row.textContent?.includes('@3'))
     const newer = rows.find(row => row.textContent?.includes('@7'))
-    // The older row is still actionable, and it says what undoing it does.
-    expect(older?.textContent).toContain('settings.history.available')
-    expect(older?.textContent).toContain('settings.history.cascades')
-    expect(older?.querySelector('button')).not.toBeNull()
-    // The newest row is the chain tail: nothing above it to roll back.
+    // The older row names the rows that must go first instead of offering an
+    // undo the host would refuse with `rewind/undo-not-top`.
+    expect(older?.textContent).toContain('settings.history.undoBlocked')
+    expect(older?.textContent).not.toContain('settings.history.available')
+    const olderButton = older?.querySelector('button') as HTMLButtonElement | null
+    expect(olderButton?.disabled).toBe(true)
+    // The newest row is the chain tail: it is the only live button.
     expect(newer?.textContent).toContain('settings.history.available')
-    expect(newer?.textContent).not.toContain('settings.history.cascades')
+    expect(newer?.textContent).not.toContain('settings.history.undoBlocked')
+    const newerButton = newer?.querySelector('button') as HTMLButtonElement | null
+    expect(newerButton?.disabled).toBe(false)
+    // A disabled button cannot start a confirm, let alone an undo.
+    await act(async () => { olderButton?.click() })
+    expect(olderButton?.textContent).toBe('settings.history.undo')
+    expect(undoHistory).not.toHaveBeenCalled()
   })
 
   it('names a lost undo record instead of offering a dead button', async () => {

@@ -298,7 +298,13 @@ export async function capsOverRpc(
 
 /** One undo attempt: done, partially done, or refused with a host code. */
 export type UndoOutcome =
-  | { readonly kind: 'ok' | 'partial'; readonly restored: number; readonly deleted: number }
+  | {
+    readonly kind: 'ok' | 'partial'
+    readonly restored: number
+    readonly deleted: number
+    /** Dialogue messages republished by this undo. */
+    readonly replayed?: number
+  }
   | { readonly kind: 'error'; readonly code: string; readonly message: string }
 
 /** Restore files to before one completed rewind (at most once per entry). */
@@ -326,6 +332,7 @@ export async function undoOverRpc(
       kind: value['kind'],
       restored: typeof value['restored'] === 'number' ? value['restored'] : 0,
       deleted: typeof value['deleted'] === 'number' ? value['deleted'] : 0,
+      replayed: typeof value['replayed'] === 'number' ? value['replayed'] : 0,
     }
   } catch (error) {
     rewindLog.warn('history', 'RPC undo threw', error)

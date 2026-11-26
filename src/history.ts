@@ -108,8 +108,10 @@ export interface HistoryEntry {
   /** When the replay above was cut back out (idempotence stamp). */
   replayCutAt?: number
   /**
-   * `opId` of the newer undo that rolled this entry back as a cascade step, so
-   * its dialogue was never republished separately.
+   * Historical field: builds that could cascade wrote the `opId` of the newer
+   * undo that rolled this entry back. Current builds refuse that jump
+   * (`rewind/undo-not-top`) instead, so nothing writes this any more — it is
+   * kept so old partitions still load and still read correctly.
    */
   cascadedBy?: string
 }
@@ -409,12 +411,12 @@ export class HistoryStore {
   }
 
   /**
-   * The newest not-yet-undone entry of one session.
+   * The newest not-yet-undone entry of one session — the only undoable one.
    *
-   * NOT an undo gate any more: any still-live entry may be undone, and undoing
-   * an older one cascades the newer ones back first. This stays because the
-   * history view needs to know which row is the newest (to explain that nothing
-   * sits above it, so nothing will be cascaded).
+   * The host enforces this (`rewind/undo-not-top`): newer rewinds sit between
+   * the disk and an older target, so stepping past one would restore files onto
+   * a worktree state that never existed. The history view uses the same rule to
+   * disable older rows and name how many have to go first.
    */
   static chainTail(entries: readonly HistoryEntry[], sessionId: string): HistoryEntry | undefined {
     let tail: HistoryEntry | undefined

@@ -270,7 +270,7 @@ fails closed when it is absent.
 | `candidates` | `{ sessionId }` | `{ candidates }` | human user messages on the surface, newest first |
 | `history` | `{ sessionId }` | `{ workspace, entries }` | partition derived host-side |
 | `history.clear` | `{ sessionId }` | `{ cleared }` | records only |
-| `undo` | `{ sessionId, opId }` | `{ kind: 'ok' \| 'partial', restored, deleted, replayed, cascaded, failed }` | any still-live entry, once per entry; cascades newer rewinds back, cuts their replays, then restores files + replays dialogue |
+| `undo` | `{ sessionId, opId }` | `{ kind: 'ok' \| 'partial', restored, deleted, replayed, failed }` | the newest still-live entry only, once per entry (`rewind/undo-not-top` otherwise); cuts the replay a newer undo left behind, then restores files + replays dialogue |
 | `archive` | `{ sessionId, opId }` | `{ path, text }` | the rewind's rendered conversation archive (markdown); the only way back to the full folded transcript, tool calls included |
 | `caps` | `{ sessionId }` | `{ history, undo, fileCheckpointing }` | what THIS host provides |
 

@@ -375,10 +375,10 @@ Rules:
 - An unparseable file, an unknown `version`, or a non-object document is renamed to `history.json.corrupt-<epoch>` and replaced with an empty
   partition — never silently deleted.
 - Writes for one partition serialize through a per-path promise chain, so concurrent appends cannot interleave a read-modify-write.
-- An entry is never edited except for the undo bookkeeping fields (`undoneAt`, `undoOutcome`, `undoMode`, `cascadedBy`) and the
-  replay-span fields (`replayedFromSeq`, `replayedToSeq`, `replayedSurfaceSeqs`, `replayCutAt`). Any still-live entry of a session
-  may be undone; undoing an older one cascades the newer rewinds back first, so `chainPrev` / `HistoryStore.chainTail` describe the
-  newest live row rather than a permission.
+- An entry is never edited except for the undo bookkeeping fields (`undoneAt`, `undoOutcome`, `undoMode`, and the historical
+  `cascadedBy` written by builds that could cascade) and the replay-span fields (`replayedFromSeq`, `replayedToSeq`,
+  `replayedSurfaceSeqs`, `replayCutAt`). Only the newest live entry of a session may be undone; `chainPrev` /
+  `HistoryStore.chainTail` name that entry, which is exactly the permission the host enforces (`rewind/undo-not-top`).
 ## 10. Cleanup state file
 The snapshot auto-cleanup policy is not a file: it is the plugin entry's own live
 configuration (`autoCleanupEnabled`, `autoCleanupMaxAgeDays`). Only the sweep clock is

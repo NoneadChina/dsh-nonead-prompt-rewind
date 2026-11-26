@@ -290,6 +290,20 @@ export const STYLE = `
   display: block;
   flex: none;
 }
+/* Build identity beside the heading — "which bundle am I looking at?". */
+.dsh-rewind-history-version {
+  flex: none;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+  user-select: text;
+}
 .dsh-rewind-history-badge {
   max-width: 320px;
   overflow: hidden;

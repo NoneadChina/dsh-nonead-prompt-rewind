@@ -1,6 +1,6 @@
 # dsh-nonead-prompt-rewind 开发指南
 
-> 面向接手开发者的当前状态手册，描述版本 **0.6.6** 的仓库实况。
+> 面向接手开发者的当前状态手册，描述版本 **0.6.7** 的仓库实况。
 > 用户视角的行为说明在 [README](../README.md)；模块分层与流水线见 [architecture](architecture.md)；
 > 磁盘格式见 [format](format.md)；DSH 接口见 [harness-reference](harness-reference.md)；
 > 兼容性结论见 [compat/audit](compat/audit.md)。**变更历史只属于 [CHANGELOG](../CHANGELOG.md)**，
@@ -58,7 +58,7 @@
 
 | 项 | 当前值 | 事实来源 |
 | --- | --- | --- |
-| 包名 / 版本 | `dsh-nonead-prompt-rewind` `0.6.6` | [package.json](../package.json) |
+| 包名 / 版本 | `dsh-nonead-prompt-rewind` `0.6.7` | [package.json](../package.json) |
 | 许可 | MIT | [LICENSE](../LICENSE) |
 | Node | `>=24.9.0` | `engines.node` |
 | DSH | `>=0.2.1-alpha.3 <0.3.1-0` | `engines.dsh`（自 DSH 0.2.1-alpha.4 起是唯一准入判据） |
@@ -663,11 +663,11 @@ workspaceKeyFromRegistry(sessionId, workspaces)
 - 条目除撤销记账字段（`undoneAt` / `undoOutcome` / `undoMode`）外不可变；`undoneAt` 最多设置一次。
 - `dispose()` 会停止接收新写并等待在途写：否则卸载时后台 append 会和数据目录拆除竞争（Windows 上表现为 `ENOTEMPTY`）。
 
-每条记录的关键字段：`opId`、`workspaceKey`、`sessionId`、`at`、`targetSeq`、`hadFiles`、`outcome`、`shadowedEvents`、`messagePreview`（≤80 字符）、`files{restored,deleted,skipped,uncovered,preview≤20}`、`errorCode/errorText`、`chainPrev`、`undoable`、`undoneAt`、`undoOutcome`、`undoMode`，以及撤销相关的派生子字段：`cascadedBy`（被哪条更新的撤销级联回滚）、`replayedFromSeq`/`replayedToSeq`/`replayedSurfaceSeqs`（该条撤销重放出的日志范围）、`replayCutAt`（该重放被更早的撤销切掉的时间）。
+每条记录的关键字段：`opId`、`workspaceKey`、`sessionId`、`at`、`targetSeq`、`hadFiles`、`outcome`、`shadowedEvents`、`messagePreview`（≤80 字符）、`files{restored,deleted,skipped,uncovered,preview≤20}`、`errorCode/errorText`、`chainPrev`、`undoable`、`undoneAt`、`undoOutcome`、`undoMode`，以及撤销相关的派生子字段：`cascadedBy`（历史字段：旧版本级联撤销时写下，现版本不再写入）、`replayedFromSeq`/`replayedToSeq`/`replayedSurfaceSeqs`（该条撤销重放出的日志范围）、`replayCutAt`（该重放被更早的撤销切掉的时间）。
 
 ### 6.3 逐层撤销与 stale 拒绝
 
-一次回退最多撤销一次；**本会话里任一仍可撤销的条目都能撤**，不限定链尾。撤较早的一条时先把比它更新的回退**级联回滚**（它们的 journal 描述了这次撤销必须经过的中间状态），再撤目标那条，于是 A→B→撤销B→撤销A 与 A→B→撤销A 都能完成。RPC `undo` 的校验顺序（顺序即语义）：
+一次回退最多撤销一次；**只有本会话里最新的一条未撤销回退可撤**（链尾）。更早的行在界面上保留按钮但禁用，并写明「先撤销更新的 N 次回退，才能撤销这条」；宿主同样以 `rewind/undo-not-top` 拒绝，绕开界面直接调 RPC 也拿不到越级撤销。于是 A→B 之后必须先撤销 B，B 变成 `undoneAt` 有值后 A 才成为链尾、A 才能撤。文件层保留最近 `MAX_UNDOABLE_JOURNALS`（10）份 completed journal，所以「撤掉新的」不会把「旧的」连坐成不可撤。RPC `undo` 的校验顺序（顺序即语义）：
 
 | # | 检查 | 失败码 |
 | --- | --- | --- |
@@ -678,10 +678,10 @@ workspaceKeyFromRegistry(sessionId, workspaces)
 | 5 | `entry.sessionId === 当前会话` | `undo-other-session` |
 | 6 | 未撤销过 | `already-undone` |
 | 7 | `entry.undoable`（该会话仍有 completed journal） | `not-undoable` |
-| 8 | 更新的回退已撤销且带 `replayedSurfaceSeqs`：先切掉它的重放（`cutReplayedTurn`，记 `replayCutAt`） | 切失败只记入 `failed`，不阻断 |
-| 9 | 更新的未撤销回退：按 `at` 倒序级联 `undoRestore`，成功记 `undoneAt` + `undoMode: 'files'` + `cascadedBy` | 任一失败即 `kind: 'partial'`（`cascaded` 计已完成的条数），目标不撤 |
+| 8 | 该会话没有更新的未撤销回退（即它是链尾） | `undo-not-top` |
+| 9 | 更新的回退已撤销且带 `replayedSurfaceSeqs`：先切掉它的重放（`cutReplayedTurn`，记 `replayCutAt`） | 切失败只记入 `failed`，不阻断 |
 | 10 | 目标 `undoRestore`：未撤销过；journal 存在且不是中间态 | `undo-consumed` / `undo-unavailable` |
-| 11 | 已应用路径仍等于还原后状态（级联后应正好回到目标回退后的状态） | `stale-undo`（附 `stalePaths`） |
+| 11 | 已应用路径仍等于还原后状态 | `stale-undo`（附 `stalePaths`） |
 | 12 | 其它还原异常 | `undo-failed` |
 
 撤销**同时还原文件与对话**：文件按 journal 回滚；对话由 `replayDialog` 在日志尾部追加一个**真实回合**——`turn/start` →（每个 dialog 项）`step/start` → `user/message` / `assistant/message`（均 `surfaceOp: 'append'`，assistant 用 `stream: []`）→ `step/end` → `turn/end`。turn 号取**日志的下一个 turn 号**（`turn/end` 计数 + 1）：DSH 的会话校验要求 turn 号从 1 起严格连续、且**只在重新加载时**校验，任何跳号（例如旧实现的 `+ 1_000_000`）都会把日志写成下次打不开的损坏文件。另一方面 agent 的回合号来自构造时读取一次的投影 `lastTurn`，之后只做内存 `+1` 递推、不重读日志，所以只写连续号而不动计数器同样会撞号。因此 `replayDialog` 在**提交 `turn/start` 之前**同时做两件事：算出连续号、读出活动 agent 的 `phase.lastTurn`；agent 未暴露可用的 idle 计数器时**直接失败、一个事件都不写**（文件半已完成，条目记 `partial` 并提示重载后重试），成功后用 `agent.setPhase({ kind: 'idle', lastTurn: turn })` 把计数器推过这一回合。只回放人类 user 消息与 assistant 的 `text` 块，不重放 tool call/result、reasoning、usage、stream。成功后的 `patch` 写入 `undoneAt` / `undoOutcome` / `undoMode: 'files+refill'`（没有对话可放时是 `'files'`）。
@@ -892,7 +892,7 @@ npm run build && node scripts/verify-host.mjs
 | 回退报错"目标不在模型上下文" | 目标被 `/compact` 遮蔽（`not-on-surface`）——预期行为 |
 | 回退后文件没变 | 预览是否为空；`fileCheckpointingEnabled`；该文件是否超 8 MiB；是否从未被 `write`/`edit` 碰过 |
 | 输入框没回填 | `dsh-rewind:refill`：命令是否 success、草稿是否非空、是否 main-view 会话 |
-| 撤销被拒 | 看错误码：`stale-undo`（回退后又改过文件）、`undo-unavailable`／`undo-consumed`（撤销记录已被淘汰或已用过）；`kind: 'partial'` 表示级联或对话回放半途失败，可重试 |
+| 撤销被拒 | 看错误码：`undo-not-top`（还有更新的未撤销回退，先撤它）、`stale-undo`（回退后又改过文件）、`undo-unavailable`／`undo-consumed`（撤销记录已被淘汰或已用过）；`kind: 'partial'` 表示对话回放或重放切除半途失败，可重试 |
 | 设置页显示降级提示 | `caps` 字段为 `false` → 宿主缺对应服务，不是插件 bug |
 | 桌面/其它窗口行为异常 | 插件按会话工作，检查是否在子代理会话里（无回退面） |
 

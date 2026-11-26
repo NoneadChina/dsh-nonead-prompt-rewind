@@ -1328,9 +1328,9 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
 // S4 / S6 / S8 / S9 — the acceptance scenarios from the development guide that
 // need several rewinds in a row or a switched-off policy.
 {
-  // S4: ANY still-live rewind is undoable. Undoing an older one rolls the newer
-  // ones back first (cascade) instead of refusing, because their journals hold
-  // the file states this undo has to pass through.
+  // S4: only the newest still-live rewind is undoable. An older one is refused
+  // with `rewind/undo-not-top` (the page disables that button for the same
+  // reason); undoing the newer one first is what makes the older one legal.
   const chainSession = buildSession('verify-chain')
   const chainAgent = makeAgent(chainSession.id, chainSession)
   for (let index = 0; index < 2; index += 1) {
@@ -1351,22 +1351,27 @@ check('log stays append-only (5 events: 4 + user/message marker)', paramSession.
   const ordered = [...chainEntries].sort((a, b) => (a.at - b.at) || (a.targetSeq - b.targetSeq))
   const olderEntry = ordered[0]
   const newerEntry = ordered[ordered.length - 1]
-  const cascade = olderEntry === undefined
+  const refused = olderEntry === undefined
     ? { ok: true }
     : await rpc(chainAgent, 'undo', { sessionId: chainAgent.id, opId: olderEntry.opId })
-  check('S4: undoing an older entry cascades the newer one back',
-    cascade.ok === true && cascade.value.cascaded === 1 && cascade.value.kind === 'ok',
-    JSON.stringify(cascade))
-  const afterCascade = await rpc(chainAgent, 'history', { sessionId: chainAgent.id })
-  const cascadedEntry = afterCascade.ok === true && newerEntry !== undefined
-    ? afterCascade.value.entries.find(entry => entry.opId === newerEntry.opId)
-    : undefined
-  check('S4: the cascaded entry is stamped undone by the older undo',
-    cascadedEntry !== undefined
-      && cascadedEntry.undoneAt !== undefined
-      && olderEntry !== undefined
-      && cascadedEntry.cascadedBy === olderEntry.opId,
-    JSON.stringify(cascadedEntry))
+  check('S4: undoing an older entry is refused while a newer one is live',
+    refused.ok === false && refused.error.code === 'rewind/undo-not-top',
+    JSON.stringify(refused))
+  // Nothing was consumed by the refusal: the newer entry is still the tail.
+  const afterRefusal = await rpc(chainAgent, 'history', { sessionId: chainAgent.id })
+  const untouched = afterRefusal.ok === true
+    ? afterRefusal.value.entries.filter(entry => entry.sessionId === chainAgent.id && entry.undoneAt === undefined)
+    : []
+  check('S4: the refusal left both entries undoable', untouched.length === 2, JSON.stringify(untouched.map(entry => entry.opId)))
+  const newerUndo = newerEntry === undefined
+    ? { ok: true }
+    : await rpc(chainAgent, 'undo', { sessionId: chainAgent.id, opId: newerEntry.opId })
+  check('S4: the newest entry is undoable', newerUndo.ok === true, JSON.stringify(newerUndo))
+  const olderUndo = olderEntry === undefined
+    ? { ok: true }
+    : await rpc(chainAgent, 'undo', { sessionId: chainAgent.id, opId: olderEntry.opId })
+  check('S4: undoing the newer one first makes the older one legal',
+    olderUndo.ok === true && olderUndo.value.kind === 'ok', JSON.stringify(olderUndo))
 }
 
 {

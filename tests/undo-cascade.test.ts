@@ -92,13 +92,13 @@ function ledgerHost(rows: HistoryEntry[]) {
   }
 }
 
-describe('undoing an older rewind cascades the newer ones back', () => {
-  it('rolls the newer journal back first and stamps it as cascaded', async () => {
+describe('only the newest live rewind of a session is undoable', () => {
+  it('refuses an older rewind while a newer one is still live', async () => {
     // A self-consistent chain over ONE file:
     //   op-1: before v0, rewind goes v1 -> v0   (Y1 = v0)
     //   op-2: before v0b, rewind goes v0 -> v0b (Y2 = v0b, rewind前 = Y1)
-    // Undoing op-1 without undoing op-2 first must pass through op-2's state,
-    // so the target's stale check sees exactly Y1.
+    // Stepping straight to op-1 would restore its rescue copy over a worktree
+    // that is at op-2's state, so the host refuses instead of guessing.
     const file = await touch('a.txt', 'v0')
     await store.recordEntry(sessionId, { callId: 'c1', anchorSeq: 5, path: file, before: 'v0' })
     await writeFile(file, 'v1', 'utf8')
@@ -123,58 +123,53 @@ describe('undoing an older rewind cascades the newer ones back', () => {
     const result = await handler('undo', { sessionId, opId: 'op-1' }, new AbortController().signal, undefined) as {
       ok: boolean
       error?: { code: string; message: string }
-      value?: { kind: string; cascaded: number; failed: unknown[] }
+      value?: unknown
     }
-    expect(result.error, JSON.stringify(result)).toBeUndefined()
-    expect(result.ok).toBe(true)
-    expect(result.value).toMatchObject({ cascaded: 1, kind: 'ok' })
-    // op-2 described the intermediate state, so it is consumed by the cascade.
-    expect(rows.find(row => row.opId === 'op-2')).toMatchObject({
-      undoneAt: expect.any(Number),
-      undoMode: 'files',
-      cascadedBy: 'op-1',
-    })
-    expect(rows.find(row => row.opId === 'op-1')?.undoneAt).toBeTypeOf('number')
-    // Files end at op-1's pre-rewind state (v1): the cascade restored Y1 first,
-    // then op-1's own rescue copy went back over it.
-    expect(await readFile(file, 'utf8')).toBe('v1')
+    expect(result.ok).toBe(false)
+    expect(result.error?.code).toBe('rewind/undo-not-top')
+    // Nothing was touched: both rows stay live and the file stays at op-2's state.
+    expect(rows.every(row => row.undoneAt === undefined)).toBe(true)
+    expect(await readFile(file, 'utf8')).toBe('v0b')
   })
 
-  it('stops before the target when a cascaded file was edited afterwards', async () => {
+  it('allows the older rewind once the newer one is undone', async () => {
     const file = await touch('b.txt', 'v0')
     await store.recordEntry(sessionId, { callId: 'c1', anchorSeq: 5, path: file, before: 'v0' })
     await writeFile(file, 'v1', 'utf8')
     await store.restoreAfter(sessionId, 5, unlink, undefined, { opId: 'op-1' })
 
-    const second = await touch('b.txt', 'v0b')
-    await store.recordEntry(sessionId, { callId: 'c2', anchorSeq: 8, path: second, before: 'v0b' })
+    await store.recordEntry(sessionId, { callId: 'c2', anchorSeq: 8, path: file, before: 'v0b' })
     await store.restoreAfter(sessionId, 8, unlink, undefined, { opId: 'op-2' })
-    // The user edits after the newer rewind: its undo must refuse, and the
-    // target undo must not restore over it.
-    await writeFile(second, 'v3', 'utf8')
 
     const rows = [entry('op-1', 1), entry('op-2', 2)]
     const session = Session.create(SessionId(sessionId))
     const handler = createRewindRpcHandler(
       store,
-      () => ({ get: () => ({ session }) }) as never,
+      () => ({ get: () => fakeAgent(session) }) as never,
       () => true,
       () => ledgerHost(rows) as never,
       () => ({ key: 'ws-1' }) as never,
       () => new Set<string>(),
     )
 
-    const result = await handler('undo', { sessionId, opId: 'op-1' }, new AbortController().signal, undefined) as {
+    // The chain tail goes first, and that is what makes the older row undoable.
+    const newerUndo = await handler('undo', { sessionId, opId: 'op-2' }, new AbortController().signal, undefined) as {
       ok: boolean
-      value?: { kind: string; cascaded: number; failed: { path: string; message: string }[] }
+      error?: unknown
     }
-    expect(result.ok).toBe(true)
-    expect(result.value?.kind).toBe('partial')
-    expect(result.value?.cascaded).toBe(0)
-    expect(result.value?.failed.some(item => item.path === '<cascade op-2>')).toBe(true)
-    // Neither entry is consumed: the cascade can be retried.
-    expect(rows.every(row => row.undoneAt === undefined)).toBe(true)
-    expect(await readFile(second, 'utf8')).toBe('v3')
+    expect(newerUndo.error, JSON.stringify(newerUndo)).toBeUndefined()
+    expect(rows.find(row => row.opId === 'op-2')?.undoneAt).toBeTypeOf('number')
+
+    const olderUndo = await handler('undo', { sessionId, opId: 'op-1' }, new AbortController().signal, undefined) as {
+      ok: boolean
+      error?: unknown
+      value?: { kind: string }
+    }
+    expect(olderUndo.error, JSON.stringify(olderUndo)).toBeUndefined()
+    expect(olderUndo.value?.kind).toBe('ok')
+    expect(rows.find(row => row.opId === 'op-1')?.undoneAt).toBeTypeOf('number')
+    // Files end at op-1's pre-rewind state (v1).
+    expect(await readFile(file, 'utf8')).toBe('v1')
   })
 })
 
@@ -232,10 +227,10 @@ describe('undoing an older rewind cuts the newer undo\'s replay back out', () =>
     const undoOlder = await handler('undo', { sessionId, opId: 'op-1' }, new AbortController().signal, undefined) as {
       ok: boolean
       error?: unknown
-      value?: { replayed: number; cascaded: number }
+      value?: { replayed: number }
     }
     expect(undoOlder.error, JSON.stringify(undoOlder)).toBeUndefined()
-    expect(undoOlder.value).toMatchObject({ replayed: 2, cascaded: 0 })
+    expect(undoOlder.value?.replayed).toBe(2)
     const dump = surfaceDump(session)
     expect(dump).toContain('A one question')
     // Undoing op-1 says the later rewinds never happened, so the turn op-2's

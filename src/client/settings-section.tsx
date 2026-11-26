@@ -27,6 +27,7 @@ import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-cli
 import type { ArchiveView, CapsView, HistoryEntryView, HistoryView, UndoOutcome } from './host-rpc.ts'
 import type { RewindKey } from './locales.ts'
 import { SettingsCard, type SettingsCardProps } from './settings-card.tsx'
+import { PLUGIN_VERSION } from './build-info.ts'
 
 /** Copy the page reads; the canonical key set lives in `./locales.ts`. */
 export type SectionLabelKey =
@@ -43,7 +44,7 @@ export type SectionLabelKey =
   | 'settings.history.undoConfirm'
   | 'settings.history.conversationOnly'
   | 'settings.history.available'
-  | 'settings.history.cascades'
+  | 'settings.history.undoBlocked'
   | 'settings.history.undoRecordGone'
   | 'settings.history.emptyHint'
   | 'settings.history.loading'
@@ -157,19 +158,21 @@ function HistoryRow(props: {
   readonly t: SettingsSectionProps['t']
   readonly now: number
   readonly formatter: Intl.RelativeTimeFormat | undefined
-  readonly canUndo: boolean
+  /** This row could be undone at all: live, not yet undone, journal still there. */
+  readonly undoable: boolean
   /**
-   * How many newer still-live rewinds of the same session sit above this one:
-   * undoing it rolls those files back first, so the row says so up front.
+   * How many newer still-live rewinds of the same session sit above this one.
+   * Non-zero means the button is disabled: the host refuses that undo
+   * (`rewind/undo-not-top`) and the row says which ones to undo first.
    */
-  readonly cascadeCount: number
+  readonly newerCount: number
   readonly confirming: boolean
   readonly onUndo: (opId: string) => void
   /** Loaded archive markdown for THIS row, when its viewer is open. */
   readonly archiveText: string | undefined
   readonly onArchive: (opId: string) => void
 }): React.ReactNode {
-  const { entry, t, now, formatter, canUndo, cascadeCount, confirming, onUndo, archiveText, onArchive } = props
+  const { entry, t, now, formatter, undoable, newerCount, confirming, onUndo, archiveText, onArchive } = props
   const undone = entry.undoneAt !== undefined
   const files = entry.files
   const fileCount = files === undefined ? 0 : files.restored + files.deleted
@@ -181,9 +184,10 @@ function HistoryRow(props: {
   // newer rewind retired it (or pruning did). Saying "conversation only" here
   // would be a different lie than before, so the row names the real reason.
   const recordGone = entry.undoRecordGone === true && !undone
-  // Undoing an older rewind cascades: the newer rewinds are rolled back first,
-  // so the row warns about that instead of hiding the button.
-  const showCascade = canUndo && cascadeCount > 0
+  // Only the newest live rewind is undoable; an older row stays disabled and
+  // names the rows that have to go first.
+  const canUndo = undoable && newerCount === 0
+  const blockedByNewer = undoable && newerCount > 0
   return (
     <li className={undone ? 'dsh-rewind-history-row is-undone' : 'dsh-rewind-history-row'}>
       <div className="dsh-rewind-history-rowhead">
@@ -203,23 +207,22 @@ function HistoryRow(props: {
             )
           : canUndo
             ? <span className="dsh-rewind-history-status">{t('settings.history.available')}</span>
-            : recordGone
-              ? <span className="dsh-rewind-history-status is-muted">{t('settings.history.undoRecordGone')}</span>
-              : conversationOnly
-                ? <span className="dsh-rewind-history-meta">{t('settings.history.conversationOnly')}</span>
-                : null}
-        {showCascade
-          ? (
-              <span className="dsh-rewind-history-meta">
-                {t('settings.history.cascades', { count: cascadeCount })}
-              </span>
-            )
-          : null}
+            : blockedByNewer
+              ? (
+                  <span className="dsh-rewind-history-status is-muted">
+                    {t('settings.history.undoBlocked', { count: newerCount })}
+                  </span>
+                )
+              : recordGone
+                ? <span className="dsh-rewind-history-status is-muted">{t('settings.history.undoRecordGone')}</span>
+                : conversationOnly
+                  ? <span className="dsh-rewind-history-meta">{t('settings.history.conversationOnly')}</span>
+                  : null}
       </div>
       {entry.messagePreview === ''
         ? null
         : <div className="dsh-rewind-history-preview" title={entry.messagePreview}>{entry.messagePreview}</div>}
-      {canUndo || entry.archivePath !== undefined
+      {canUndo || blockedByNewer || entry.archivePath !== undefined
         ? (
             <div className="dsh-rewind-history-rowactions">
               {canUndo
@@ -232,7 +235,21 @@ function HistoryRow(props: {
                       {confirming ? t('settings.history.undoConfirm') : t('settings.history.undo')}
                     </button>
                   )
-                : null}
+                : blockedByNewer
+                  ? (
+                      // The button stays visible but dead: hiding it on an older row
+                      // reads as "this rewind was never undoable", which is the lie
+                      // this row exists to avoid.
+                      <button
+                        type="button"
+                        className="dsh-rewind-history-btn"
+                        disabled
+                        title={t('settings.history.undoBlocked', { count: newerCount })}
+                      >
+                        {t('settings.history.undo')}
+                      </button>
+                    )
+                  : null}
               {entry.archivePath === undefined
                 ? null
                 : (
@@ -467,17 +484,16 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
 
   const now = Date.now()
   const entries = state.kind === 'ready' ? [...state.view.entries].reverse() : []
-  // ANY still-live rewind of the active session may be undone. Undoing an older
-  // one rolls the newer rewinds' files back first (their journals describe the
-  // states this undo has to pass through) and cuts back out whatever dialogue
-  // their own undos republished, so the text is not published twice.
+  // Only the newest still-live rewind of the active session is undoable: later
+  // rewinds sit between the disk and that target, so stepping past one would
+  // land the worktree on a state it never occupied. The host refuses the same
+  // thing (`rewind/undo-not-top`), so this is the button agreeing with the gate
+  // rather than a UI-only rule.
   const liveEntries = entries.filter(entry => entry.sessionId === sessionId && entry.undoneAt === undefined)
-  // Newer live rewinds above a row: undoing that row rolls these back first.
-  const cascadeCountOf = (entry: HistoryEntryView): number =>
+  // Newer live rewinds above a row: undo those before this one.
+  const newerCountOf = (entry: HistoryEntryView): number =>
     liveEntries.filter(other => other.at > entry.at).length
-  const undoableCount = entries.filter(
-    entry => entry.sessionId === sessionId && entry.undoable && entry.undoneAt === undefined,
-  ).length
+  const undoableCount = liveEntries.filter(entry => entry.undoable).length
   const undoneCount = entries.filter(entry => entry.undoneAt !== undefined).length
 
   return (
@@ -487,6 +503,11 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
           <h2 className="dsh-rewind-history-title">
             <SettingsIcon />
             {t('settings.nav')}
+            {/* Which build answered the last bug report, visible without opening
+                dev tools: the version is baked in by esbuild (`build-info.ts`). */}
+            <span className="dsh-rewind-history-version" title={PLUGIN_VERSION}>
+              {PLUGIN_VERSION}
+            </span>
           </h2>
           <div className="dsh-rewind-history-actions">
             <button type="button" className="dsh-rewind-history-btn" onClick={reload}>
@@ -595,8 +616,8 @@ export function SettingsSection(props: SettingsSectionProps): React.ReactNode {
                 t={t}
                 now={now}
                 formatter={formatter}
-                canUndo={entry.sessionId === sessionId && entry.undoable && entry.undoneAt === undefined}
-                cascadeCount={cascadeCountOf(entry)}
+                undoable={entry.sessionId === sessionId && entry.undoable && entry.undoneAt === undefined && entry.undoRecordGone !== true}
+                newerCount={newerCountOf(entry)}
                 confirming={confirmingUndo === entry.opId}
                 onUndo={onUndo}
                 archiveText={archive?.opId === entry.opId ? archive.text : undefined}

@@ -1345,11 +1345,17 @@ export function createRewindRpcHandler(
         if (entry.sessionId !== session.id) return rpcFailure('rewind/undo-other-session', 'entry belongs to another session')
         if (entry.undoneAt !== undefined) return rpcFailure('rewind/already-undone', 'this rewind was already restored once')
         if (!entry.undoable) return rpcFailure('rewind/not-undoable', 'the snapshot for this rewind is gone')
-        // Newer rewinds of the same session sit between the disk and this
-        // target: they are rolled back first, newest to oldest.
+        // Only the newest still-live rewind of this session is undoable. Later
+        // rewinds sit between the disk and this target: rolling the target back
+        // would land the worktree on a state it never occupied. This is a
+        // refusal, not a cascade — the page disables the button for the same
+        // reason, and the check lives here so a direct RPC call cannot skip it.
         const newer = entries
           .filter((candidate) => candidate.sessionId === session.id && candidate.at > entry.at)
           .sort((a, b) => b.at - a.at)
+        if (!HistoryStore.isChainTail(entries, entry)) {
+          return rpcFailure('rewind/undo-not-top', 'restore the newer rewind first')
+        }
         try {
           // Undo restores the FILE half, then brings the withdrawn dialogue
           // back as one new turn at the end of the log (`replayDialog`).
@@ -1401,60 +1407,7 @@ export function createRewindRpcHandler(
             }
           }
 
-          // ---- 2. Roll the NEWER undos' files back, newest first ----
-          // Their journals describe states the target's undo must pass through:
-          // skipping one leaves the worktree at that state while the target's
-          // rescue copy overwrites only its own paths.
-          const cascaded: string[] = []
-          const cascadeFailed: { path: string; message: string }[] = []
-          for (const candidate of newer) {
-            if (candidate.undoneAt !== undefined) continue
-            try {
-              const rolled = await store.undoRestore(candidate.sessionId, candidate.opId, path => unlink(path))
-              if (rolled.failed.length > 0) {
-                cascadeFailed.push(...rolled.failed.map(item => ({
-                  path: item.path,
-                  message: `[cascade ${candidate.opId}] ${item.message}`,
-                })))
-                break
-              }
-              if (settle !== undefined) await settle({ session }, rolled).catch(() => undefined)
-              await host.store.patch(workspace.key, candidate.opId, {
-                undoneAt: Date.now(),
-                undoOutcome: 'success',
-                // Their dialogue is covered by the target's replay, so it is
-                // never republished separately.
-                undoMode: 'files',
-                cascadedBy: opId,
-              })
-              cascaded.push(candidate.opId)
-            } catch (error) {
-              cascadeFailed.push({
-                path: `<cascade ${candidate.opId}>`,
-                message: error instanceof Error ? error.message : String(error),
-              })
-              break
-            }
-          }
-          // A partially applied cascade is still retryable (the entries it
-          // stamped are skipped next time), but undoing the target now would
-          // restore ITS files over a worktree that never reached the target
-          // state. Report and stop.
-          if (cascadeFailed.length > 0) {
-            return {
-              ok: true,
-              value: {
-                kind: 'partial',
-                restored: 0,
-                deleted: 0,
-                replayed: 0,
-                cascaded: cascaded.length,
-                failed: [...cutFailed, ...cascadeFailed],
-              },
-            }
-          }
-
-          // ---- 3. Undo the target, then replay its dialogue once ----
+          // ---- 2. Undo the target, then replay its dialogue once ----
           const outcome = await store.undoRestore(entry.sessionId, opId, path => unlink(path))
           // The undo rewrites the worktree exactly like a rewind, so it must run
           // the same settle step: without it the session's NEXT write of a
@@ -1512,9 +1465,6 @@ export function createRewindRpcHandler(
               restored: outcome.restored.length,
               deleted: outcome.deleted.length,
               replayed,
-              // How many newer rewinds this undo had to roll back first (so the
-              // page can say "and N later rewinds were rolled back").
-              cascaded: cascaded.length,
               failed,
             },
           }
@@ -2859,10 +2809,21 @@ export function apply(ctx: Context, config?: Config): void {
   // injected scope. `rebaseOnOwner` then points the service's own `this.ctx` at it,
   // so the lookup inside the effect resolves through the scope's injected services
   // instead of the provider's fibre chain.
+  // A diagnosis flag, not state: `inject` resolves SILENTLY when a dependency it
+  // names is never provided, so an invisible `webServer` would leave the plugin
+  // with no channel and no log line at all — the exact shape of the 405 reports.
+  let rpcScopeReady = false
+  let rpcReady = false
+
   ctx.inject(['connection', 'webServer'], (scope) => {
+    rpcScopeReady = true
+    ctx.logger.info('[dsh-rewind] RPC scope resolved (connection + webServer visible)')
     try {
       const proxied = scope.get('connection') as RewindRpcHost | undefined
-      if (proxied === undefined) return
+      if (proxied === undefined) {
+        ctx.logger.warn('[dsh-rewind] RPC scope resolved without a connection service')
+        return
+      }
       const raw = rawServiceOf(scope, 'connection') as RewindRpcHost | undefined
       const host = raw === undefined ? undefined : rebaseOnOwner(raw, scope)
       const dispose = (host ?? proxied).rpc.handle(
@@ -2878,10 +2839,34 @@ export function apply(ctx: Context, config?: Config): void {
         ),
       )
       scope.effect(() => dispose, 'dsh-rewind RPC channel')
+      rpcReady = true
+      ctx.logger.info(`[dsh-rewind] RPC channel ready at ${REWIND_RPC_CHANNEL}`)
     } catch (error) {
       ctx.logger.warn(`[dsh-rewind] RPC channel registration failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   })
+
+  // If `inject` never resolves, nothing above runs and the user only sees a 405.
+  // Report the visible services once so a silent wiring gap is diagnosable from
+  // the host log instead of requiring a source read.
+  ctx.effect(() => {
+    const timer = setTimeout(() => {
+      if (rpcReady) return
+      const probe = (name: string): string => {
+        try {
+          const get = (ctx as unknown as { get(key: string): unknown }).get.bind(ctx)
+          return get(name) === undefined ? 'absent' : 'visible'
+        } catch (error) {
+          return `unreadable (${error instanceof Error ? error.message : String(error)})`
+        }
+      }
+      ctx.logger.warn(
+        `[dsh-rewind] RPC channel never registered${rpcScopeReady ? '' : ` (inject scope never resolved)`} — connection: ${probe('connection')}, webServer: ${probe('webServer')}`,
+      )
+    }, 5000)
+    if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref()
+    return () => clearTimeout(timer)
+  }, 'dsh-rewind RPC registration watchdog')
 
   ctx.inject(['fs', 'workingDirectory'], (scope) => {
     const fs = scope.fs
