@@ -1078,6 +1078,32 @@ interface RewindRpcHost {
 const CORDIS_ISOLATE = Symbol.for('cordis.isolate')
 
 /**
+ * `Symbol.for('cordis.root')`: the symbol slot under which every cordis context
+ * exposes the application root context (`ctx[Context.root]`).
+ */
+const CORDIS_ROOT = Symbol.for('cordis.root')
+
+/**
+ * Read the application ROOT context out of any cordis context.
+ *
+ * cordis 4.2 moved the root from an inherited `ctx.root` property to the
+ * symbol-keyed slot `ctx[Context.root]`, so the plain property read this plugin
+ * used to make now yields `undefined` (and fails type checking). Reading the
+ * registry key directly keeps the lookup independent of the exported binding,
+ * exactly like {@link rawServiceOf} reads the isolation table.
+ *
+ * @param base - the context to read from.
+ * @returns the root context, or undefined when the slot is absent.
+ */
+export function rootContextOf(base: object): object | undefined {
+  const keyed = (base as unknown as Record<symbol, unknown>)[CORDIS_ROOT]
+  if (typeof keyed === 'object' && keyed !== null) return keyed
+  // Older cordis lines expose the root as an inherited plain property instead.
+  const legacy = (base as { readonly root?: unknown }).root
+  return typeof legacy === 'object' && legacy !== null ? legacy : undefined
+}
+
+/**
  * Read a service's RAW implementation out of a cordis context.
  *
  * A context proxy hands back a traced wrapper (so method calls see the caller's
@@ -2648,7 +2674,8 @@ export function apply(ctx: Context, config?: Config): void {
       const proxied = scope.get('connection') as RewindRpcHost | undefined
       if (proxied === undefined) return
       const raw = rawServiceOf(scope, 'connection') as RewindRpcHost | undefined
-      const host = raw === undefined ? undefined : rebaseOnRoot(raw, scope.root)
+      const root = rootContextOf(scope)
+      const host = raw === undefined || root === undefined ? undefined : rebaseOnRoot(raw, root)
       const dispose = (host ?? proxied).rpc.handle(
         REWIND_RPC_CHANNEL,
         createRewindRpcHandler(

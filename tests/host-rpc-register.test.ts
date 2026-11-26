@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
-import { rebaseOnRoot, rawServiceOf } from '../src/index.ts'
+import { rebaseOnRoot, rawServiceOf, rootContextOf } from '../src/index.ts'
 
 /** Stand-in for the harness `webServer` service: records the routes it mounts. */
 class FakeWebServer extends Service {
@@ -99,7 +99,7 @@ describe('host RPC channel registration', () => {
           try {
             const raw = rawServiceOf(scope, 'connection') as FakeConnection | undefined
             expect(raw).toBeDefined()
-            const host = rebaseOnRoot(raw!, scope.root)
+            const host = rebaseOnRoot(raw!, rootContextOf(scope)!)
             expect(host).toBeDefined()
             // Constructor state must survive the re-base: the route handler runs
             // long after registration and reads instance fields.
