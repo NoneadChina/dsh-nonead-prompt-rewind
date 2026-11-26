@@ -286,7 +286,7 @@ the plugin still rewinds by command — only the graphical surfaces degrade.
 - **Admission boundary.** `engines.node` is `>=24.9.0` and `engines.dsh` is `>=0.2.1-0 <0.3.1-0`;
   every `@deepseek-ai/dsh-*` peer uses the same range and is optional. A runtime outside the range
   is refused at load rather than admitted into unadapted code. `devDependencies` pin
-  `0.2.2-rc.5`, the latest released line; each claimed release inside the range is verified by
+  `0.2.3-alpha.2`, the current alpha line; each claimed release inside the range is verified by
   `npm run verify:compat`, which pins the tree to one line and reruns every typecheck config plus
   the suite (results and the 0.2.0 line's recorded gap: [compat/versions.md](compat/versions.md)).
   Optional surfaces are read through the runtime `caps` probe rather than a version branch.

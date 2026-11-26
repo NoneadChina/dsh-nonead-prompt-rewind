@@ -13,14 +13,15 @@
 > [Deliberate semantics](#deliberate-semantics-no-entry-kept) names it. Upstream references use
 > symbols and file names, never line numbers: line numbers rot.
 >
-> **Declared range:** `engines.dsh: ">=0.2.1-0 <0.3.1-0"`, mirrored on all sixteen
+> **Declared range:** `engines.dsh: ">=0.2.1-0 <0.3.1-0"`, mirrored on all twenty-one
 > `@deepseek-ai/dsh-*` peer dependencies. **Verified baseline** (the targeted version):
-> `0.2.2-rc.5`, the version every `@deepseek-ai/*` devDependency is pinned to. Release and
+> `0.2.3-alpha.2`, the version every `@deepseek-ai/*` devDependency is pinned to (with cordis
+> `4.2.0-alpha.1`, cosmokit `1.10.0-alpha.1` and schemastery `3.20.0-alpha.1`). Release and
 > DSH alignment policy: [`docs/release/release.md`](../release/release.md).
 >
 > **Compatibility stance: adapt forward, never drop the range.** Moving the baseline forward
-> does not narrow the declared range — every earlier `0.2.2` build and the `0.2.1-0` line stay
-> admitted.
+> does not narrow the declared range — every earlier `0.2.3` and `0.2.2` build, and the
+> `0.2.1-0` line, stay admitted.
 > Forward adaptation and old-line support are one mechanism, not two: the new rules this plugin
 > needs are read from the runtime (`caps`, the settings/config-form surfaces) and absent ones
 > degrade, so the same code serves both the baseline and the lines below it.
@@ -53,14 +54,15 @@ is why the two are kept identical. A runtime outside the declared range is refus
 rather than admitted into unadapted code. The declaration is not the verification record,
 which matters here because the declared range spans two lines:
 
-- **`0.2.2-rc.5` — verified baseline.** Every `@deepseek-ai/*` devDependency is pinned to
-  this version, and `npm run check` runs against it. Every invariant below is asserted at this
-  baseline.
-- **`0.2.2-rc.4` — previously verified, still admitted.** The same invariant set passes at
-  `rc.4` (verified in an isolated copy). The two rc builds are a re-publish pair: all runtime
-  JS and declaration files are byte-identical, and only the version fields of the package
-  manifests differ, so the declared range admits both while the baseline follows the newest
-  patch.
+- **`0.2.3-alpha.2` — verified baseline.** Every `@deepseek-ai/*` devDependency is pinned to
+  this version (cordis `4.2.0-alpha.1`, cosmokit `1.10.0-alpha.1`, schemastery
+  `3.20.0-alpha.1`), and `npm run check` runs against it. Every invariant below is asserted at
+  this baseline.
+- **`0.2.2-rc.5` / `rc.4` — previously verified, still admitted.** The same invariant set
+  passes at both (rc.4 verified in an isolated copy). The two rc builds are a re-publish pair:
+  all runtime JS and declaration files are byte-identical, and only the version fields of the
+  package manifests differ, so the declared range admits both while the baseline follows the
+  newest patch.
 - **`0.2.2-alpha.3` / `alpha.2` — earlier verified patches, still admitted.** The invariant set
   passed at both alphas before the baseline moved to the rc line; no invariant changed, so the
   declared range keeps them admitted while the baseline follows the current patch.

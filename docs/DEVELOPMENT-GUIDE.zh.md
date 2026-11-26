@@ -1,6 +1,6 @@
 # dsh-nonead-prompt-rewind 开发指南
 
-> 面向接手开发者的当前状态手册，描述版本 **0.6.1** 的仓库实况。
+> 面向接手开发者的当前状态手册，描述版本 **0.6.2** 的仓库实况。
 > 用户视角的行为说明在 [README](../README.md)；模块分层与流水线见 [architecture](architecture.md)；
 > 磁盘格式见 [format](format.md)；DSH 接口见 [harness-reference](harness-reference.md)；
 > 兼容性结论见 [compat/audit](compat/audit.md)。**变更历史只属于 [CHANGELOG](../CHANGELOG.md)**，
@@ -58,12 +58,12 @@
 
 | 项 | 当前值 | 事实来源 |
 | --- | --- | --- |
-| 包名 / 版本 | `dsh-nonead-prompt-rewind` `0.6.1` | [package.json](../package.json) |
+| 包名 / 版本 | `dsh-nonead-prompt-rewind` `0.6.2` | [package.json](../package.json) |
 | 许可 | MIT | [LICENSE](../LICENSE) |
 | Node | `>=24.9.0` | `engines.node` |
 | DSH | `>=0.2.1-0 <0.3.1-0` | `engines.dsh`（自 DSH 0.2.1-alpha.4 起是唯一准入判据） |
-| 验证基线 | devDependencies 全部钉 `0.2.2-rc.5` | [package.json](../package.json)；记录在 [compat/audit](compat/audit.md) 的 Targeted version |
-| 兼容口径 | 声明范围是**经 `verify:compat` 验证的地板**，不是保留旧契约的承诺：`0.2.1-rc.5` 与 `0.2.2-rc.5` 均通过三套 typecheck + 全量测试；`0.2.0` 线缺 `dsh-error`/`dsh-working-directory`、token-meter 也还没有 marker-aware fold，故不声明；`0.3.x` 尚未发布，`engines.dsh` 在 `0.3.1-0` 处封顶 | [compat/versions](compat/versions.md) |
+| 验证基线 | devDependencies 全部钉 `0.2.3-alpha.2` | [package.json](../package.json)；记录在 [compat/audit](compat/audit.md) 的 Targeted version |
+| 兼容口径 | 声明范围是**经 `verify:compat` 验证的地板**，不是保留旧契约的承诺：`0.2.1-rc.5`、`0.2.2-rc.5` 与 `0.2.3-alpha.2` 均通过三套 typecheck + 全量测试；`0.2.0` 线缺 `dsh-error`/`dsh-working-directory`、token-meter 也还没有 marker-aware fold，故不声明；`0.3.x` 尚未发布，`engines.dsh` 在 `0.3.1-0` 处封顶 | [compat/versions](compat/versions.md) |
 | 仓库自动化 | **没有** `.github/workflows/` | 仓库根目录实况；见 PLAN 待办 |
 | 界面语言 | 8：`en` `zh` `ja` `es` `fr` `de` `ru` `pt` | `HOST_DICTS` / `CLIENT_DICTS` |
 | 测试规模 | `tests/` 下 52 个 `*.test.ts` | 目录实况 |

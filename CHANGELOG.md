@@ -8,6 +8,28 @@ and the release steps are documented in
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-26
+
+> 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
+
+### 其他变更
+
+- **DSH 验证基线前进到 `0.2.3-alpha.2`**（当前 alpha 线）：37 个 `@deepseek-ai/dsh-*` devDependency 全部钉到该版本，三个伴生包随之升到 cordis `4.2.0-alpha.1`、cosmokit `1.10.0-alpha.1`、schemastery `3.20.0-alpha.1`；声明范围不变，`0.2.2` 线此前各版本与 `0.2.1-0` 线仍准入。
+- **适配 cordis 4.2 的根上下文变更**：cordis 4.2 把应用根上下文从继承属性 `ctx.root` 改到 symbol 槽 `ctx[Context.root]`，沿用旧写法会直接编译失败（`TS2576`）。插件现在优先读该 symbol、取不到再回退旧属性，因此两代 cordis 上 `/dsh-rewind` RPC 通道都仍能把服务实现重定向到根上下文，设置页「回退历史」在旧宿主上不会退化为「宿主 RPC 不可用」。
+- 三基线实测：`0.2.1-rc.5`、`0.2.2-rc.5`、`0.2.3-alpha.2` 上三套类型检查与全量测试均通过（`npm run verify:compat` 矩阵已含三者）。
+
+---
+
+> DSH `>=0.2.1-0 <0.3.1-0` supported. Internal alpha.
+
+### Chores
+
+- **The DSH verification baseline moves to `0.2.3-alpha.2`** (the current alpha line): all 37 `@deepseek-ai/dsh-*` devDependencies are pinned to it, and the three companion packages move to cordis `4.2.0-alpha.1`, cosmokit `1.10.0-alpha.1` and schemastery `3.20.0-alpha.1`. The declared range is unchanged, so every earlier `0.2.2` build and the `0.2.1-0` line stay admitted.
+- **Adapted to cordis 4.2's root-context move**: cordis 4.2 replaced the inherited `ctx.root` property with the `ctx[Context.root]` symbol slot, which broke compilation outright (`TS2576`). The plugin now reads that symbol first and falls back to the old property, so the `/dsh-rewind` RPC channel still re-bases service implementations onto the root context on both cordis generations — the settings page's rewind history no longer degrades to "host RPC unavailable" on an older host.
+- Verified on three baselines: every typecheck config and the whole suite pass on `0.2.1-rc.5`, `0.2.2-rc.5` and `0.2.3-alpha.2` (`npm run verify:compat` now covers all three).
+
+**Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.6.1...v0.6.2
+
 ## [0.6.1] - 2026-11-22
 
 > 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
