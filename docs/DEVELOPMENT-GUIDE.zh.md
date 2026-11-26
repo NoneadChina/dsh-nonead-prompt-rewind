@@ -61,12 +61,12 @@
 | 包名 / 版本 | `dsh-nonead-prompt-rewind` `0.6.2` | [package.json](../package.json) |
 | 许可 | MIT | [LICENSE](../LICENSE) |
 | Node | `>=24.9.0` | `engines.node` |
-| DSH | `>=0.2.1-0 <0.3.1-0` | `engines.dsh`（自 DSH 0.2.1-alpha.4 起是唯一准入判据） |
+| DSH | `>=0.2.1-alpha.3 <0.3.1-0` | `engines.dsh`（自 DSH 0.2.1-alpha.4 起是唯一准入判据） |
 | 验证基线 | devDependencies 全部钉 `0.2.3-alpha.2` | [package.json](../package.json)；记录在 [compat/audit](compat/audit.md) 的 Targeted version |
-| 兼容口径 | 声明范围是**经 `verify:compat` 验证的地板**，不是保留旧契约的承诺：`0.2.1-rc.5`、`0.2.2-rc.5` 与 `0.2.3-alpha.2` 均通过三套 typecheck + 全量测试；`0.2.0` 线缺 `dsh-error`/`dsh-working-directory`、token-meter 也还没有 marker-aware fold，故不声明；`0.3.x` 尚未发布，`engines.dsh` 在 `0.3.1-0` 处封顶 | [compat/versions](compat/versions.md) |
+| 兼容口径 | 声明范围是**经 `verify:compat` 验证的地板**，不是保留旧契约的承诺：默认矩阵跑声明范围内**全部 17 个可安装版本**（`0.2.1-alpha.3`…`rc.5`、`0.2.2-alpha.2`…`rc.5`、`0.2.3-alpha.1`/`alpha.2`），逐个钉版本通过三套 typecheck + 全量测试。下限之所以是 `0.2.1-alpha.3`：`alpha.1`/`alpha.2` 可安装但缺 marker-aware token fold（`stateVersion 6`），回退后 token 统计回落到截断面（`12` 而非 `48`），插件无法从外部修正，故不声明，改以 `--unclaimed` 保留实测记录；`0.2.0` 线同理且缺 `dsh-error`/`dsh-working-directory`；`0.3.x` 尚未发布，`engines.dsh` 在 `0.3.1-0` 处封顶 | [compat/versions](compat/versions.md) |
 | 仓库自动化 | **没有** `.github/workflows/` | 仓库根目录实况；见 PLAN 待办 |
 | 界面语言 | 8：`en` `zh` `ja` `es` `fr` `de` `ru` `pt` | `HOST_DICTS` / `CLIENT_DICTS` |
-| 测试规模 | `tests/` 下 52 个 `*.test.ts` | 目录实况 |
+| 测试规模 | `tests/` 下 53 个 `*.test.ts` | 目录实况 |
 
 ### 1.5 规模（当前 HEAD）
 

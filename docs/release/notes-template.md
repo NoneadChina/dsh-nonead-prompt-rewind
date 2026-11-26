@@ -13,7 +13,7 @@ one block per release, newest first, ISO dates.
 ```md
 ## [X.Y.Z] - YYYY-MM-DD
 
-> 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
+> 适配 DSH `>=0.2.1-alpha.3 <0.3.1-0`（内测版）
 
 ### 新增功能
 
@@ -25,7 +25,7 @@ one block per release, newest first, ISO dates.
 
 ---
 
-> DSH `>=0.2.1-0 <0.3.1-0` supported. Internal alpha.
+> DSH `>=0.2.1-alpha.3 <0.3.1-0` supported. Internal alpha.
 
 ### New Features
 

@@ -13,15 +13,18 @@
 > [Deliberate semantics](#deliberate-semantics-no-entry-kept) names it. Upstream references use
 > symbols and file names, never line numbers: line numbers rot.
 >
-> **Declared range:** `engines.dsh: ">=0.2.1-0 <0.3.1-0"`, mirrored on all twenty-one
+> **Declared range:** `engines.dsh: ">=0.2.1-alpha.3 <0.3.1-0"`, mirrored on all twenty-one
 > `@deepseek-ai/dsh-*` peer dependencies. **Verified baseline** (the targeted version):
 > `0.2.3-alpha.2`, the version every `@deepseek-ai/*` devDependency is pinned to (with cordis
 > `4.2.0-alpha.1`, cosmokit `1.10.0-alpha.1` and schemastery `3.20.0-alpha.1`). Release and
 > DSH alignment policy: [`docs/release/release.md`](../release/release.md).
 >
-> **Compatibility stance: adapt forward, never drop the range.** Moving the baseline forward
-> does not narrow the declared range — every earlier `0.2.3` and `0.2.2` build, and the
-> `0.2.1-0` line, stay admitted.
+> **Compatibility stance: adapt forward, never drop a release the plugin actually passes.**
+> Moving the baseline forward does not narrow the declared range — every earlier `0.2.3`,
+> `0.2.2` and `0.2.1` build from `alpha.3` up stays admitted, and the default
+> `verify:compat` matrix runs all 17 of them rather than a sample. The floor is set by a
+> measured ceiling, not by preference: `0.2.1-alpha.1` and `alpha.2` predate the marker-aware
+> token fold, so a rewind there would publish a smaller figure than the user spent.
 > Forward adaptation and old-line support are one mechanism, not two: the new rules this plugin
 > needs are read from the runtime (`caps`, the settings/config-form surfaces) and absent ones
 > degrade, so the same code serves both the baseline and the lines below it.
@@ -51,30 +54,30 @@ when either core capability (`surfaceOp`, `rpc`) is absent.
 it, DSH reads no other range and admits the plugin only while the runtime satisfies it under
 `includePrerelease`. Older hosts ignore `engines.dsh` and read the peer ranges instead, which
 is why the two are kept identical. A runtime outside the declared range is refused at load
-rather than admitted into unadapted code. The declaration is not the verification record,
-which matters here because the declared range spans two lines:
+rather than admitted into unadapted code. The declaration is not the verification record, and
+here the two agree exactly: `npm run verify:compat` runs **every** installable release inside
+the range — 17 of them — and all pass at their own pinned tree.
 
+- **All 17 claimed releases verified.** `0.2.1-alpha.3` … `0.2.1-rc.5` (8), `0.2.2-alpha.2` …
+  `0.2.2-rc.5` (7), `0.2.3-alpha.1` / `0.2.3-alpha.2` (2). Per-release results, package
+  absences and notes: [versions.md](versions.md).
 - **`0.2.3-alpha.2` — verified baseline.** Every `@deepseek-ai/*` devDependency is pinned to
   this version (cordis `4.2.0-alpha.1`, cosmokit `1.10.0-alpha.1`, schemastery
   `3.20.0-alpha.1`), and `npm run check` runs against it. Every invariant below is asserted at
-  this baseline.
-- **`0.2.2-rc.5` / `rc.4` — previously verified, still admitted.** The same invariant set
-  passes at both (rc.4 verified in an isolated copy). The two rc builds are a re-publish pair:
-  all runtime JS and declaration files are byte-identical, and only the version fields of the
-  package manifests differ, so the declared range admits both while the baseline follows the
-  newest patch.
-- **`0.2.2-alpha.3` / `alpha.2` — earlier verified patches, still admitted.** The invariant set
-  passed at both alphas before the baseline moved to the rc line; no invariant changed, so the
-  declared range keeps them admitted while the baseline follows the current patch.
-- **`0.2.1-0` line — admitted, not verified version-by-version.** It predates the current
-  client settings surface, so what exists there is decided at **runtime capability detection**,
-  not by a version branch: the client asks the host over the `/dsh-rewind` `caps` endpoint and
-  degrades what is absent (see [U9](#u9--the-capability-surface-differs-across-the-declared-range));
-  `scripts/probe-caps.mjs` reports the same capability set before the plugin is even enabled.
-  Core capabilities missing → the plugin refuses to be enabled; optional ones missing → the
-  affected surface degrades and says so. The same detection covers the **`0.3.0` line**, which
-  the range admits but no probe verifies (its packages were not available in the verification
-  tree); the upper bound (`<0.3.1-0`) is where the next adaptation starts.
+  this baseline. It is also the only build that needed both shims (root-context access and
+  attachment read), so a new contract is found here first.
+- **`0.2.1-alpha.1` / `0.2.1-alpha.2` — installable, recorded unclaimed.** They predate the
+  marker-aware token fold (`stateVersion 6`, joined in `alpha.3`), so a rewind there reports
+  the cut surface's smaller figure (`12` where the pre-cut log says `48` in the `compat-gaps`
+  G4 probe). The plugin cannot correct a host-side fold from outside, so the declared range
+  starts at `alpha.3` instead of claiming a release that would show the user saved spend they
+  never saved. Those two builds stay measurable with `npm run verify:compat -- --unclaimed`;
+  their failure does not turn the run red, and the script fails loudly if they ever start
+  passing, because that is when they belong back in the claimed set.
+- **`0.3.0` line.** Nothing is published yet; its packages were not available in the
+  verification tree. The range admits it (below `<0.3.1-0`) and runtime capability detection
+  decides what works there (see [U9](#u9--the-capability-surface-differs-across-the-declared-range));
+  the upper bound is where the next adaptation starts.
 
 ## Seams at the verified baseline
 

@@ -160,7 +160,7 @@ This plugin deliberately stays lightweight and focused on one thing — "convers
 ## Compatibility
 
 - Node.js `>=24.9.0`.
-- Supports DSH `>=0.2.1-0 <0.3.1-0` (authoritative: `package.json` `engines.dsh`). Missing host capabilities degrade through runtime probes: the Settings page names what is missing instead of failing silently.
+- Supports DSH `>=0.2.1-alpha.3 <0.3.1-0` (authoritative: `package.json` `engines.dsh`). Every installable release in that range is verified one tree at a time by `npm run verify:compat` — 17 today, table in [docs/compat/versions.md](docs/compat/versions.md). Missing host capabilities degrade through runtime probes: the Settings page names what is missing instead of failing silently.
 - Compatibility definition, verification method, and version alignment: see [docs/compat/audit.md](docs/compat/audit.md).
 
 > [!WARNING]

@@ -283,13 +283,15 @@ from the root context (`ctx.inject(['connection'])`) because `rpc.handle` re-rea
 web server when it runs; disposal is tied to the plugin's fiber. Without a connection service
 the plugin still rewinds by command — only the graphical surfaces degrade.
 ## 8. Compatibility strategy
-- **Admission boundary.** `engines.node` is `>=24.9.0` and `engines.dsh` is `>=0.2.1-0 <0.3.1-0`;
-  every `@deepseek-ai/dsh-*` peer uses the same range and is optional. A runtime outside the range
-  is refused at load rather than admitted into unadapted code. `devDependencies` pin
-  `0.2.3-alpha.2`, the current alpha line; each claimed release inside the range is verified by
-  `npm run verify:compat`, which pins the tree to one line and reruns every typecheck config plus
-  the suite (results and the 0.2.0 line's recorded gap: [compat/versions.md](compat/versions.md)).
-  Optional surfaces are read through the runtime `caps` probe rather than a version branch.
+- **Admission boundary.** `engines.node` is `>=24.9.0` and `engines.dsh` is
+  `>=0.2.1-alpha.3 <0.3.1-0`; every `@deepseek-ai/dsh-*` peer uses the same range and is
+  optional. A runtime outside the range is refused at load rather than admitted into unadapted
+  code. `devDependencies` pin `0.2.3-alpha.2`, the current alpha line, and
+  `npm run verify:compat` pins the tree to **every** claimed release in the range — all 17, one
+  at a time — rerunning each typecheck config plus the suite. The floor is `alpha.3` because the
+  two earlier alphas predate the marker-aware token fold, so they stay recorded as unclaimed
+  rather than declared ([per-release results](compat/versions.md)). Optional surfaces are read
+  through the runtime `caps` probe rather than a version branch.
 - **Runtime capability probe.** `caps` reports `history`, `undo` and `fileCheckpointing`; the
   settings page states a missing capability instead of hiding the loss.
 - **Optional seams degrade, they do not break the feature.** Each command registration is

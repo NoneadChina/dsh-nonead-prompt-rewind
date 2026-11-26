@@ -11,7 +11,7 @@
 | 版本 | `0.6.2` | [package.json](../package.json) |
 | 定位 | 同窗口就地回退对话 + 写前快照还原工作区文件 | [README](../README.md) |
 | 包形态 | 双面插件（host `lib/index.js` + client `lib/client.js`），一个 bundle row | `cordis.patch.yml`、`package.json` |
-| 运行环境 | Node `>=24.9.0`，DSH `>=0.2.1-0 <0.3.1-0` | `engines` |
+| 运行环境 | Node `>=24.9.0`，DSH `>=0.2.1-alpha.3 <0.3.1-0` | `engines` |
 | 能力面 | 4 个命令、7 个 RPC 端点、4 个 UI 槽位、8 种界面语言 | `src/index.ts`、`src/client/index.ts` |
 | 交互 | 单阶段确认（无模式选择），对话与文件同时回退 | `src/client/confirm.ts`、`src/index.ts` |
 | 存储上限 | 单文件 8 MiB（自动首见扫描 1 MiB）、每会话 100 个消息组、每工作区 10 条历史 | `src/snapshot.ts`、`src/snapshot-policy.ts`、`src/history.ts` |
@@ -24,11 +24,10 @@
 ### 已知缺口
 
 1. **没有 CI，发布全靠手动**：仓库没有 `.github/workflows/`；[release/release.md](release/release.md) 已如实写明"手动发布、Trusted Publisher 未配置"，因此每次发布都依赖本地 `npm run check` 与人工步骤。`node scripts/changelog-extract.mjs v0.6.2` 当前已通过（0.5.1 时代那次 `Full Changelog` 行校验失败已修好并写进模板）。
-2. **0.2.1 线未逐版本验证**：`engines.dsh` 下限是 `0.2.1-0`，但 devDependencies 与端到端验证只覆盖 `0.2.3-alpha.2`。低版本线依赖 `caps` 运行时探测降级，缺少"每个 0.2.1 patch 上实际能跑到哪一步"的记录。
-3. **验证口径**：`compat/audit.md` 的 `Version scope` 已写明"验证基线 = `0.2.3-alpha.2`、0.2.1 线靠运行时能力探测降级"（2026-11-04 补记）；仍需在每次基线前进时同步该段与本文 §1 的数字。
-4. **界面语言只有 8 种且译文为 AI 生成**；新增语言目前需要同时改两份字典 + 一个 `locale/*.json`，没有生成器或校验清单。
-5. **性能与体验的已知点**：长会话/大仓库下的边界复查要对每个 tracked 路径 `stat`；设置页历史列表无虚拟化；回填等待窗口 20 秒；已回退轮次在右侧导航里仍留"未加载"刻度（README 已知问题）。
-6. **文档与事实容易漂移**：模块表、命令清单、语言数、测试数、上限值在 README / AGENTS / docs 多处手写，没有链接/事实一致性检查（`verify:host` 只验宿主行为；原先唯一的配图校验已随预览图下线一并移除）。
+2. **验证口径**：[compat/audit.md](compat/audit.md) 的 `Version scope` 已写明"验证基线 = `0.2.3-alpha.2`、声明范围内 17 个版本逐个实测通过、`0.2.1-alpha.1`/`alpha.2` 记录为 unclaimed"；仍需在每次基线前进或范围变化时同步该段、本文 §1 与 [compat/versions.md](compat/versions.md) 的数字。
+3. **界面语言只有 8 种且译文为 AI 生成**；新增语言目前需要同时改两份字典 + 一个 `locale/*.json`，没有生成器或校验清单。
+4. **性能与体验的已知点**：长会话/大仓库下的边界复查要对每个 tracked 路径 `stat`；设置页历史列表无虚拟化；回填等待窗口 20 秒；已回退轮次在右侧导航里仍留"未加载"刻度（README 已知问题）。
+5. **文档与事实容易漂移**：模块表、命令清单、语言数、测试数、上限值在 README / AGENTS / docs 多处手写，没有链接/事实一致性检查（`verify:host` 只验宿主行为；原先唯一的配图校验已随预览图下线一并移除）。
 
 ---
 
@@ -50,17 +49,17 @@
 
 **第一步**：在仓库根建 `.github/workflows/ci.yml`，内容为 `actions/checkout@v4` + `actions/setup-node@v4`（`node-version: 24`）+ `npm ci` + `npm run check`；先只做 CI，不碰发布，跑通一次 PR 再继续。
 
-### 2.2 0.2.1 线逐版本验证
+### 2.2 0.3.0 线适配预案
 
-**目标**：把 `>=0.2.1-0 <0.3.1-0` 这个声明变成"每个 0.2.1 patch 上都有实测结论"。
+**目标**：DSH 0.3.x 一旦发布，能在一次会话内给出"能不能声明、缺什么"的结论，而不是等用户装上后才发现。
 
 **验收标准**
 
-- 对 0.2.1 线每个可安装的 patch 版本：`node scripts/probe-caps.mjs --json` 的输出、`npm run check` 的结果、以及手工冒烟（回退 / 预览 / 历史 / 撤销各一次）记入 `docs/compat/audit.md` 或新表格。
-- 明确记录哪些面在该版本缺失、`caps` 是否正确上报、以及缺失时的降级是否符合预期。
-- 若某版本无法通过核心面（`surfaceOp` / `rpc`），把 `engines.dsh` 下限上调，并同步 16 个 peer 范围与 `package-lock.json` 根元数据。
+- `npm view @deepseek-ai/dsh dist-tags` 出现 0.3.0 系列后，`npm run verify:compat -- <首个 tag>` 的失败项逐条落到 [compat/audit.md](compat/audit.md) 的不变量表（哪条 `I` 失败在哪条新契约上）。
+- 每个失败的契约二选一：改插件适配新写法，或在新旧两代都可用时加 shim；shim 必须两代都实测通过，并写进 [compat/versions.md](compat/versions.md) 的 Compatibility shims。
+- 全部 claimed 版本（含 0.3.0）通过后，放宽 `engines.dsh` 上界与 21 个 `@deepseek-ai/dsh-*` peer 范围，并把新版本加入 `scripts/verify-compat.mjs` 的 `CLAIMED_MATRIX`（默认矩阵即全量，不另设抽样）。
 
-**第一步**：`npm view @deepseek-ai/dsh-session versions --json` 列出 0.2.1 线的 patch，挑最低可安装版本建一个隔离 worktree，把 devDependencies 临时钉到该版本后跑 `node scripts/probe-caps.mjs`。
+**第一步**：`npm view @deepseek-ai/dsh dist-tags --json`，确认 0.3.0 首个可安装 tag 与其伴生包（cordis / cosmokit / schemastery）版本。
 
 ### 2.3 在 compat/audit 写明验证基线
 

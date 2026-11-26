@@ -14,7 +14,7 @@
 | Repository | `https://github.com/NoneadChina/dsh-nonead-prompt-rewind` |
 | License | MIT |
 | Node engine | `>=24.9.0` |
-| DSH range | `>=0.2.1-0 <0.3.1-0` (`engines.dsh`; the `@deepseek-ai/dsh-*` peers mirror it) |
+| DSH range | `>=0.2.1-alpha.3 <0.3.1-0` (`engines.dsh`; the `@deepseek-ai/dsh-*` peers mirror it) |
 | DSH dev baseline | `@deepseek-ai/dsh-*` pinned to `0.2.3-alpha.2` |
 | Packaged files | `lib/`, `cordis.patch.yml`, `locale/`, `assets/icon.svg`, `SECURITY.md`, a few docs; `CHANGELOG.md` is not shipped |
 | Automation | none: the repository contains no workflow files |
@@ -26,6 +26,13 @@ client-test configs), `build` (esbuild → `lib/`), `test` (vitest), `verify:hos
 (end-to-end host verification) and `npm pack --dry-run` (tarball layout). A commit that
 has not passed it on the release commit is not releasable. `prepack` re-runs the build, so
 `npm publish` always ships a complete `lib/`.
+
+`npm run check` does **not** run the DSH version matrix. Run `npm run verify:compat` as well
+whenever `engines.dsh`, a `@deepseek-ai/dsh-*` peer range or a `devDependencies` pin changes:
+it pins the tree to all 17 claimed releases inside the range, one at a time, and prints a
+per-release pass/fail table (about six minutes). A failing claimed release is a finding —
+fix it, or narrow the declared range. Never ship with an unverified claim; the recorded
+unclaimed builds are re-measured with `npm run verify:compat -- --unclaimed`.
 
 ## First publish (manual, one-time)
 

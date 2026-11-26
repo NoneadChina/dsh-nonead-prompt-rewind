@@ -166,6 +166,31 @@ describe('package layout', () => {
     expect([narrowCeiling, wideCeiling]).toContain(parsed?.[2])
   })
 
+  it('anchors the verified matrix to the declared floor', async () => {
+    // The defect this pins: `engines.dsh` named a floor the default matrix did
+    // not start at, so a release the range admitted was never run. The floor is
+    // now the first claimed release, and the baseline every devDependency pins
+    // must sit inside the matrix — otherwise `npm run check` verifies a tree no
+    // claim covers.
+    const script = await readFile(join(root, 'scripts/verify-compat.mjs'), 'utf8')
+    const matrixBlock = /const CLAIMED_MATRIX = \[([\s\S]*?)\]/.exec(script)?.[1] ?? ''
+    const matrix = [...matrixBlock.matchAll(/'([0-9][^']*)'/g)].map((match) => match[1]!)
+    expect(matrix.length, 'CLAIMED_MATRIX must name at least one release').toBeGreaterThan(0)
+
+    const floor = /^>=(\d+\.\d+\.\d+-[0-9A-Za-z.-]+) /.exec(pkg.engines?.dsh ?? '')?.[1]
+    expect(floor, `engines.dsh must name a prerelease floor: ${String(pkg.engines?.dsh)}`).toBeTruthy()
+    expect(matrix[0], 'the default matrix must start at the declared floor').toBe(floor)
+
+    const baseline = (pkg.devDependencies?.['@deepseek-ai/dsh-session'] ?? '').replace(/^[~^]/, '')
+    expect(matrix, 'the verified baseline must be a claimed release').toContain(baseline)
+
+    const unclaimedBlock = /const RECORDED_UNCLAIMED = \[([\s\S]*?)\]/.exec(script)?.[1] ?? ''
+    const unclaimed = [...unclaimedBlock.matchAll(/'([0-9][^']*)'/g)].map((match) => match[1]!)
+    for (const version of unclaimed) {
+      expect(matrix, `${version} is recorded unclaimed and cannot also be claimed`).not.toContain(version)
+    }
+  })
+
   it('verifies the cordis family at the version its peer floor names', () => {
     // The host bundles these itself, so they bind like a dsh package does: one
     // version on both sides, and the suite runs against exactly that version

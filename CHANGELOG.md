@@ -10,23 +10,23 @@ and the release steps are documented in
 
 ## [0.6.2] - 2026-11-26
 
-> 适配 DSH `>=0.2.1-0 <0.3.1-0`（内测版）
+> 适配 DSH `>=0.2.1-alpha.3 <0.3.1-0`（内测版）
 
 ### 其他变更
 
-- **DSH 验证基线前进到 `0.2.3-alpha.2`**（当前 alpha 线）：37 个 `@deepseek-ai/dsh-*` devDependency 全部钉到该版本，三个伴生包随之升到 cordis `4.2.0-alpha.1`、cosmokit `1.10.0-alpha.1`、schemastery `3.20.0-alpha.1`；声明范围不变，`0.2.2` 线此前各版本与 `0.2.1-0` 线仍准入。
+- **DSH 验证基线前进到 `0.2.3-alpha.2`**（当前 alpha 线）：37 个 `@deepseek-ai/dsh-*` devDependency 全部钉到该版本，三个伴生包随之升到 cordis `4.2.0-alpha.1`、cosmokit `1.10.0-alpha.1`、schemastery `3.20.0-alpha.1`。
+- **声明范围收敛到实测下界 `0.2.1-alpha.3`**：`verify:compat` 从 3 个代表版本扩到声明范围内的全部 17 个可安装版本（`0.2.1-alpha.3`…`rc.5`、`0.2.2-alpha.2`…`rc.5`、`0.2.3-alpha.1` / `0.2.3-alpha.2`），逐个钉版本跑三套类型检查与全量测试，全部通过。`0.2.1-alpha.1` / `0.2.1-alpha.2` 可安装但缺 marker-aware token fold（`stateVersion 6`），回退后 token 统计会回落到截断面（`12` 而非 `48`），插件无法从外部修正，因此不纳入声明范围；两者改以 `--unclaimed` 保留实测记录，若日后通过，脚本会提示收回声明。
 - **适配 cordis 4.2 的根上下文变更**：cordis 4.2 把应用根上下文从继承属性 `ctx.root` 改到 symbol 槽 `ctx[Context.root]`，沿用旧写法会直接编译失败（`TS2576`）。插件现在优先读该 symbol、取不到再回退旧属性，因此两代 cordis 上 `/dsh-rewind` RPC 通道都仍能把服务实现重定向到根上下文，设置页「回退历史」在旧宿主上不会退化为「宿主 RPC 不可用」。
-- 三基线实测：`0.2.1-rc.5`、`0.2.2-rc.5`、`0.2.3-alpha.2` 上三套类型检查与全量测试均通过（`npm run verify:compat` 矩阵已含三者）。
 
 ---
 
-> DSH `>=0.2.1-0 <0.3.1-0` supported. Internal alpha.
+> DSH `>=0.2.1-alpha.3 <0.3.1-0` supported. Internal alpha.
 
 ### Chores
 
-- **The DSH verification baseline moves to `0.2.3-alpha.2`** (the current alpha line): all 37 `@deepseek-ai/dsh-*` devDependencies are pinned to it, and the three companion packages move to cordis `4.2.0-alpha.1`, cosmokit `1.10.0-alpha.1` and schemastery `3.20.0-alpha.1`. The declared range is unchanged, so every earlier `0.2.2` build and the `0.2.1-0` line stay admitted.
+- **The DSH verification baseline moves to `0.2.3-alpha.2`** (the current alpha line): all 37 `@deepseek-ai/dsh-*` devDependencies are pinned to it, and the three companion packages move to cordis `4.2.0-alpha.1`, cosmokit `1.10.0-alpha.1` and schemastery `3.20.0-alpha.1`.
+- **The declared range narrows to its measured floor, `0.2.1-alpha.3`**: `verify:compat` now runs every installable release inside the range — all 17, from `0.2.1-alpha.3` through `0.2.1-rc.5`, `0.2.2-alpha.2` through `0.2.2-rc.5`, and `0.2.3-alpha.1` / `0.2.3-alpha.2` — pinning each tree and running the three typecheck configs plus the full suite; all pass. `0.2.1-alpha.1` and `0.2.1-alpha.2` install but predate the marker-aware token fold (`stateVersion 6`), so a rewind there publishes `12` where the pre-cut log says `48`; the plugin cannot correct a host-side fold from outside, so they are recorded as unclaimed and re-measured with `--unclaimed` — the script says so if they ever start passing and belong back in the claimed set.
 - **Adapted to cordis 4.2's root-context move**: cordis 4.2 replaced the inherited `ctx.root` property with the `ctx[Context.root]` symbol slot, which broke compilation outright (`TS2576`). The plugin now reads that symbol first and falls back to the old property, so the `/dsh-rewind` RPC channel still re-bases service implementations onto the root context on both cordis generations — the settings page's rewind history no longer degrades to "host RPC unavailable" on an older host.
-- Verified on three baselines: every typecheck config and the whole suite pass on `0.2.1-rc.5`, `0.2.2-rc.5` and `0.2.3-alpha.2` (`npm run verify:compat` now covers all three).
 
 **Full Changelog**: https://github.com/NoneadChina/dsh-nonead-prompt-rewind/compare/v0.6.1...v0.6.2
 

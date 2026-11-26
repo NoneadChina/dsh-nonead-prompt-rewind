@@ -157,7 +157,7 @@ rm <dsh home>/snapshot-cleanup-last-sweep.json
 ## 兼容性
 
 - Node.js `>=24.9.0`。
-- 支持 DSH `>=0.2.1-0 <0.3.1-0`（以 `package.json` 的 `engines.dsh` 为准）。宿主缺少某项能力时按运行时探测降级：设置页会写明缺什么，而不是静默失效。
+- 支持 DSH `>=0.2.1-alpha.3 <0.3.1-0`（以 `package.json` 的 `engines.dsh` 为准）：范围里每个可安装版本都经 `npm run verify:compat` 逐个实测（当前 17 个，见 [docs/compat/versions.md](docs/compat/versions.md)）。宿主缺少某项能力时按运行时探测降级：设置页会写明缺什么，而不是静默失效。
 - 兼容性定义、验证方法与版本对齐详见 [docs/compat/audit.md](docs/compat/audit.md)。
 
 > [!WARNING]

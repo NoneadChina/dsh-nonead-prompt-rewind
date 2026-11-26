@@ -61,14 +61,18 @@ them at runtime, so the published tarball does not carry them.
 - Every change must pass `npm run check` before it is committed.
 - DSH compatibility is iteration-driven in the sense that `main` never carries a
   shim for a contract the host has already dropped. What it *does* keep is a
-  verified floor: `engines.dsh` is a range (`>=0.2.1-0 <0.3.1-0`) and every
-  installable release inside it must pass `npm run verify:compat` (see
+  verified floor: `engines.dsh` is a range (`>=0.2.1-alpha.3 <0.3.1-0`) and the
+  default `npm run verify:compat` matrix runs **every** installable release inside
+  it — all 17, one tree at a time — rather than a sample (see
   `docs/compat/versions.md`). A shim is allowed only for a contract that is
-  verified live in more than one released line — today that is the attachment
-  read shape (`readAttachment(structured)` on 0.2.2, `readAttachment(id)` on
-  0.2.1). Unreleased lines are never claimed: the 0.2.0 line cannot be
-  installed at all (it lacks `dsh-error` and `dsh-working-directory`), and no
-  0.3.x release exists yet.
+  verified live in more than one released line — today two: the attachment read
+  shape (`readAttachment(structured)` on 0.2.2, `readAttachment(id)` on 0.2.1)
+  and the root-context slot (cordis 4.0 `ctx.root`, cordis 4.2
+  `ctx[Context.root]`). Unreleased lines are never claimed: the 0.2.0 line and
+  the two `0.2.1` alphas before `alpha.3` predate the marker-aware token fold, so
+  a rewind there would under-report token spend; they stay recorded as unclaimed
+  (`npm run verify:compat -- --unclaimed`) instead of declared, and no 0.3.x
+  release exists yet.
 
 ## Further reading
 - Interfaces / compatibility: `docs/harness-reference.md`, `docs/compat/audit.md`
